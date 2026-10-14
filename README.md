@@ -26,7 +26,8 @@ Nothing below is verified in VRChat yet. The current phase is the probe.
 | --- | --- |
 | `server/main.ts` | Deno probe server: serves media, logs requests, ranges, and per-chunk pull timing as JSONL |
 | `server/gen_media.ts` | ffmpeg test media: frame number as text plus a 16-bit binary strip |
-| `unity/ModemProbe.cs` | UdonSharp probe driver: load, play/pause, seek and pause patterns, position sampling |
+| `unity/ModemProbe.cs` | UdonSharp probe: automatic load, seek and pause patterns, position sampling |
+| `unity/Editor/ProbeSceneBuilder.cs` | Generates the probe scene, headless or from the editor menu |
 | `media/`, `logs/` | Generated; not tracked |
 
 ## Server
@@ -41,18 +42,31 @@ deno task serve               # 127.0.0.1:8787; HOST/PORT env to change
 writes `logs/<start time>.jsonl` with `req`, `res`, `pull` (offset and size of
 every 16 KiB chunk sent), and `done`/`abort` events, timestamped in epoch ms.
 
-## Unity scene (world project, Unity 2022.3.22f1)
+## Unity world
 
-1. Create a **Worlds** project in ALCOM. UdonSharp ships with the worlds SDK.
-2. Copy `unity/ModemProbe.cs` into `Assets/` and create its UdonSharp program asset.
-3. Add a `VRCAVProVideoPlayer` with a `VRCAVProVideoScreen` on a quad. Also add a
-   second object with `VRCUnityVideoPlayer` to compare the two backends.
-4. Add a world-space Canvas with a `VRCUrlInputField` and buttons calling
-   `LoadFromInput`, `Play`, `Pause`, `SeekBack`, `SeekForward`,
-   `StartSeekPattern`, `StartPausePattern`, `StopPatterns`, `ToggleSampling`.
-5. Test with **Build & Test** only. Turn on "Allow Untrusted URLs" in the client.
+Project: `~/ALCOM/Projects/vrcmodem` (Worlds SDK 3.10.5, which bundles
+UdonSharp and ClientSim). This repo's `unity/` is symlinked into it as
+`Assets/vrmodem`, so scripts and their `.meta` files live here.
 
-Exact component and prefab names should be checked against the installed SDK.
+The scene is generated, with no UI. There's a VRCWorld, a floor, and two bare
+unsynced players: AVPro, and Unity rendering into `ProbeVideo.renderTexture`.
+Each has a `ModemProbe` that runs automatically: load (staggered 8 s for the
+URL rate limit), play, sampling, seek pattern, pause pattern, stop. The URL is
+baked at build time.
+
+```sh
+VRMODEM_URL=http://127.0.0.1:8787/s/probe/probe-intra.mp4 \
+  ~/Unity/Hub/Editor/2022.3.22f1/Editor/Unity -batchmode -quit -nographics \
+  -buildTarget Win64 -projectPath ~/ALCOM/Projects/vrcmodem \
+  -executeMethod ProbeSceneBuilder.Build -logFile logs/unity-build.log
+```
+
+The batch run can't use the project while it's open in the editor. Use the
+**vrmodem → Build Probe Scene** menu there instead. Test with **Build & Test**
+only, with "Allow Untrusted URLs" turned on in the client.
+
+Linux editor prerequisites: `libxml2-legacy` (pacman) and the Windows Build
+Support (Mono) Hub module.
 
 ## Probe protocol
 
