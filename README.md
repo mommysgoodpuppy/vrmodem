@@ -102,7 +102,8 @@ VRMODEM_URL='http://127.0.0.1:8787/v/{session}/probe.mp4?fps=60&seconds=3600&lea
 The batch run can't use the project while it's open in the editor. Use the
 **vrmodem → Build Probe Scene** menu there instead. Normal testing goes through
 `deno task probe` (below), which is the scripted equivalent of Build & Test.
-Local `127.0.0.1` URLs played without changing "Allow Untrusted URLs".
+This client has "Allow Untrusted URLs" enabled, and every run so far depends
+on it: VRChat treats `127.0.0.1` and LAN IPs as untrusted (see Findings).
 
 Linux editor prerequisites: `libxml2-legacy` (pacman) and the Windows Build
 Support (Mono) Hub module.
@@ -130,6 +131,21 @@ bit rate. Chrome preflights and HEAD requests are excluded from grading. The pro
 must not be open in the editor at the same time.
 
 ## Findings
+
+### Run 2026-10-14T09-35 (2 AVPro lanes over the LAN IP, server on 0.0.0.0:8080)
+
+- **Earlier runs relied on "Allow untrusted URLs".** The client log shows
+  `Allow untrusted URLs: True`, and every load logs `You are playing an
+  untrusted URL (Domain: …) in a local world`, for `127.0.0.1` as well as
+  `192.168.1.101`. That message says the domain must be added to "the world's
+  Video Player Allowed Domains list on the website". So an uploaded world
+  should be able to allow its modem server for players who haven't enabled
+  untrusted URLs. That is untested.
+- **The LAN path behaves like loopback.** 1200/1200 seeks matched at
+  60 seeks/s per lane, with p99 latency 3.7 ms.
+- **The public IP wasn't tested.** The router refuses connections from the
+  LAN to its own WAN address (no NAT loopback), so a client on this machine
+  can't reach the forwarded port. That needs a second vantage point.
 
 ### Runs 2026-10-14T09-28 and 09-30 (2 AVPro lanes through `delay_proxy`)
 
@@ -189,8 +205,8 @@ must not be open in the editor at the same time.
 
 ### Run 2026-10-14T08-30 (proton-rtsp-11.0, desktop, intra MP4 over 127.0.0.1)
 
-- **Local URLs work.** `http://127.0.0.1` played in both players in a local
-  test world, with no Untrusted URLs change.
+- **Local URLs work** in both players in a local test world. (Corrected in run
+  09-35: this relied on "Allow Untrusted URLs" being enabled.)
 - **Both players use Windows Media Foundation under Proton.** The user agent
   is `NSPlayer/12.00.19041.4894 WMFSDK/12.00.19041.4894` for AVPro and for the
   Unity player. A request with a Chrome user agent precedes each load (VRChat's
@@ -229,7 +245,8 @@ For each backend (AVPro, Unity) × media (intra MP4, 1 s GOP MP4, HLS):
 Correlate the `[ModemProbe]` lines in VRChat's `output_log` (UTC) with the
 server's JSONL. `deno task analyze` does this automatically.
 
-Answered so far: localhost works in a local test world. Under Proton both
+Answered so far: localhost and LAN IPs work in a local test world with
+untrusted URLs allowed. Under Proton both
 players use Media Foundation (`NSPlayer`/`WMFSDK`). Seeks inside the buffered
 range still produce a new request, for sample `ceil(t × fps)`, exactly. One
 seek per Udon frame per player is lossless, and players add up linearly.
