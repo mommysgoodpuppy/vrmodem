@@ -30,7 +30,8 @@ See [Findings](#findings) for what has been measured so far, and
 | `server/virtual_mp4.ts` | In-memory MP4 header and repeated 128-byte intra sample; synthesizes byte ranges |
 | `server/virtual_mp4_test.ts` | Tests for virtual MP4s, HTTP ranges and pacing, and analyzer grading (`deno task test`) |
 | `server/run_probe.ts` | Orchestrator: headless export, server, VRChat launch, log collection (`deno task probe`) |
-| `server/analyze.ts` | Merged client/server timeline and seek grading (`deno task analyze`) |
+| `server/analyze.ts` | Merged client/server timeline, seek grading, per-rate and aggregate throughput (`deno task analyze`) |
+| `server/delay_proxy.ts` | Userspace TCP proxy that emulates WAN RTT, handshake included (`deno task delay`) |
 | `unity/ModemProbe.cs` | UdonSharp probe: automatic load, seek and pause patterns, position sampling |
 | `unity/Editor/ProbeSceneBuilder.cs` | Generates the probe scene, headless or from the editor menu |
 | `unity/Editor/WorldExport.cs` | Headless local-test world export through the SDK's `VRCWorldBuilder` |
@@ -75,13 +76,21 @@ UdonSharp and ClientSim). This repo's `unity/` is symlinked into it as
 
 The scene is generated, with no UI. There's a VRCWorld, a floor, and two bare
 unsynced players: AVPro, and Unity rendering into `ProbeVideo.renderTexture`.
-Each has a `ModemProbe` that runs automatically: load (staggered 8 s for the
-URL rate limit), play, sampling, seek pattern, pause pattern, stop. The URL is
-baked at build time. The default virtual URL substitutes `{session}` with
-`avpro` or `unity`; explicit `/s/` and `/v/` URLs also get per-player sessions.
-Virtual seeks aim frame N at `(N − 1 + phase) / fps`, because WMF requests
-`ceil(t × fps)`. The builder sweeps phases 0.05, 0.25, 0.5, 0.75, and 0.95.
-Each seek logs its expected frame and phase. Looping is disabled.
+With `VRMODEM_LANES=N` there are instead N AVPro players, `Probe AVPro0`…,
+as parallel uplink lanes. Each has a `ModemProbe` that runs automatically:
+load (staggered for the URL rate limit), play, sampling, seek pattern, pause
+pattern, stop. The URL is baked at build time. The default virtual URL
+substitutes `{session}` with the player's session (`avpro`, `unity`,
+`avpro0`…); explicit `/s/` and `/v/` URLs also get per-player sessions.
+Looping is disabled.
+
+Virtual seeks pick random frames N and aim at `(N − 0.5) / fps`, computed in
+double, because WMF requests `ceil(t × fps)`. The schedule is
+`seeksPerInterval` seeks at each of `seekIntervals`: seconds between seeks,
+0 for one per Udon frame, or −k for k seeks within each Udon frame.
+`VRMODEM_INTERVALS` (comma-separated) and `VRMODEM_SEEKS` override it.
+`VRMODEM_MATRIX` (whitespace-separated URLs) switches the probes to matrix
+mode instead: load each URL in turn, 12 s apart, and log ready or failed.
 
 ```sh
 VRMODEM_URL='http://127.0.0.1:8787/v/{session}/probe.mp4?fps=60&seconds=3600&lead=30&pace=1' \
@@ -106,15 +115,43 @@ deno task probe            # export world, start server, launch VRChat (desktop)
 deno task analyze ../logs/run-<time>    # merged timeline -> timeline.txt
 ```
 
+Options: `--lanes N`, `--intervals 0.1,0,-2`, `--seeks N`, `--matrix "URL …"`,
+`--rtt MS` (routes the baked URLs through `delay_proxy.ts` on port 8788),
+`--url`, `--timeout`, `--no-build`, `--vr`.
+
 `probe` exports headless, then launches VRChat with
 `steam -applaunch 438100 --url=create?...&url=file:///Z:<vrcw> --watch-worlds --no-vr`.
 It follows the client's `output_log` until each `ModemProbe` reports done, then
 saves everything under `logs/run-<time>/`. The analyzer grades virtual seeks
-as PASS, MISMATCH, or NO REQUEST, with frame indices and request latency;
-Chrome preflights and HEAD requests are excluded from grading. The project
+as PASS (a request for the exact frame within 5 s), MISMATCH, or NO REQUEST,
+and prints per-player, per-interval match counts, unexplained extra requests,
+reorders, latency (mean, p99, max), and the best 1 s and 10 s aggregate
+bit rate. Chrome preflights and HEAD requests are excluded from grading. The project
 must not be open in the editor at the same time.
 
 ## Findings
+
+### Runs 2026-10-14T09-10 to 09-24 (uplink rate, depth, and lanes)
+
+- **One seek per Udon frame is lossless.** At 60 fps (desktop), 400 random
+  far-apart seeks per player per rate, at 10/s and at every frame, all matched
+  on both players, with no extra or reordered requests. AVPro p99 latency is
+  4.8 ms at 60/s; Unity is about 19 ms throughout.
+- **Within one Udon frame, the last `SetTime` wins.** In bursts of 2, 4, or 8
+  seeks per frame, the last seek matched 100% of the time on both players.
+  Unity never issued a request for an earlier one. AVPro occasionally leaked
+  earlier ones (5–20%, unreliable). The per-player ceiling is the Udon frame
+  rate.
+- **Lanes scale linearly.** Four AVPro players seeking every frame matched
+  12000/12000, each at 60 seeks/s, for 5.3 kbit/s aggregate over 10 s at
+  22 bits per seek.
+- **WMF accepts at most about 2^22 samples.** A matrix of virtual MP4s loaded
+  at 4,194,240 samples at 30, 60, and 240 fps (up to 38.8 h). At 8,388,480
+  samples (60 or 240 fps) both players fail with `PlayerError` after WMF
+  requests `bytes=<size>-` past the end of the file. That file is
+  1,073,726,237 bytes, just under 2^30, so this may be a size limit instead;
+  either way it's about where float32 `SetTime` precision runs out too. The
+  default is now 60 fps × 69904 s = 4,194,240 frames, 22 bits per seek.
 
 ### Runs 2026-10-14T09-01 and 09-05 (virtual MP4, sub-frame phase sweep)
 
@@ -184,8 +221,8 @@ server's JSONL. `deno task analyze` does this automatically.
 
 Answered so far: localhost works in a local test world. Under Proton both
 players use Media Foundation (`NSPlayer`/`WMFSDK`). Seeks inside the buffered
-range still produce a new request, for sample `ceil(t × fps)`, exactly, at
-1 Hz.
+range still produce a new request, for sample `ceil(t × fps)`, exactly. One
+seek per Udon frame per player is lossless, and players add up linearly.
 
 Still open:
 

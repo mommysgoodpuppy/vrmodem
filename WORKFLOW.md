@@ -14,7 +14,8 @@ For what the project is and what has been measured, see [README.md](README.md).
 | Scene builder | `unity/Editor/ProbeSceneBuilder.cs` | Generates the UI-free probe scene and bakes per-player URLs |
 | World export | `unity/Editor/WorldExport.cs` | Builds the scene and exports a local-test `.vrcw` through the SDK's `VRCWorldBuilder`, headless |
 | Orchestrator | `server/run_probe.ts` | Export → server → launch VRChat → collect logs |
-| Analyzer | `server/analyze.ts` | Merges client and server logs into `timeline.txt`; grades virtual seeks |
+| Analyzer | `server/analyze.ts` | Merges client and server logs into `timeline.txt`; grades virtual seeks and reports throughput |
+| Delay proxy | `server/delay_proxy.ts` | Emulates WAN RTT on localhost without root (`--rtt`) |
 | Unity project | `~/ALCOM/Projects/vrcmodem` | Worlds SDK 3.10.5 (bundles UdonSharp and ClientSim); this repo's `unity/` is symlinked in as `Assets/vrmodem` |
 
 ## One-time setup
@@ -66,8 +67,13 @@ Outputs in `logs/run-<time>/`: `unity-export.log`, `server.jsonl`, `server.txt`,
 `launch-args.txt`, `vrchat-probe.log` (filtered), and `vrchat-output.log` (full
 client log). `analyze` adds `timeline.txt`.
 
-Options: `--url URL` (`{session}` becomes `avpro`/`unity`), `--timeout SECONDS`,
-`--no-build` (reuse the last export), `--vr`.
+Options: `--url URL` (`{session}` becomes the player's session), `--lanes N`
+(N AVPro players instead of AVPro + Unity), `--intervals` and `--seeks` (seek
+schedule), `--matrix "URL …"` (load-acceptance matrix), `--rtt MS` (through
+the delay proxy), `--timeout SECONDS`, `--no-build` (reuse the last export),
+`--vr`.
+
+Runs take minutes. Start them in the background rather than blocking on them.
 
 This is a real client logged in as Ellie, in a hidden local test instance of a
 locally built world. Nothing is uploaded.

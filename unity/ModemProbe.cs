@@ -25,16 +25,27 @@ public class ModemProbe : UdonSharpBehaviour
     [Header("Seek pattern")]
     public float[] seekTargets = { 10f, 60f, 20f, 100f, 5f, 75f, 40f, 115f };
     public float seekInterval = 1f;
-    // Zero preserves ordinary media seeks. Virtual media seeks each target
-    // frame once per phase. WMF requests the first sample starting at or
-    // after the seek time, ceil(t * fps), so frame N is aimed at
-    // (N - 1 + phase) / fps.
+    // Zero preserves ordinary media seeks at seekInterval. Virtual media
+    // instead seeks random frames in [1, seekFrames), seeksPerInterval at each
+    // of seekIntervals. 0 means one seek every Udon frame, and -k means k seeks
+    // within each Udon frame. WMF requests the first
+    // sample starting at or after the seek time, ceil(t * fps), so frame N is
+    // aimed at (N - 0.5) / fps.
     public int seekFps;
-    public float[] seekPhases = { 0.5f };
+    public int seekFrames;
+    public float[] seekIntervals = { 0.1f, 0f, -2f, -4f, -8f };
+    public int seeksPerInterval = 400;
 
     [Header("Pause pattern")]
     public float pauseInterval = 1f;
     public int pauseSteps = 16;
+
+    [Header("Matrix")]
+    // When set, the probe only loads each URL in turn, matrixInterval apart,
+    // and logs whether it became ready or failed. Used to find which virtual
+    // media parameters the player accepts.
+    public VRCUrl[] matrixUrls = new VRCUrl[0];
+    public float matrixInterval = 12f;
 
     [Header("Sampling")]
     public float sampleInterval = 0.25f;
@@ -42,6 +53,7 @@ public class ModemProbe : UdonSharpBehaviour
     private int _step;
     private bool _sampling;
     private bool _failed;
+    private int _matrix = -1;
 
     private void Log(string msg)
     {
@@ -55,7 +67,22 @@ public class ModemProbe : UdonSharpBehaviour
 
     private void Start()
     {
-        SendCustomEventDelayedSeconds(nameof(_Load), startDelay);
+        if (matrixUrls.Length > 0) SendCustomEventDelayedSeconds(nameof(_MatrixStep), startDelay);
+        else SendCustomEventDelayedSeconds(nameof(_Load), startDelay);
+    }
+
+    public void _MatrixStep()
+    {
+        _matrix++;
+        if (_matrix >= matrixUrls.Length)
+        {
+            player.Stop();
+            Log("probe done");
+            return;
+        }
+        Log("matrix " + _matrix + " load " + matrixUrls[_matrix].Get());
+        player.LoadURL(matrixUrls[_matrix]);
+        SendCustomEventDelayedSeconds(nameof(_MatrixStep), matrixInterval);
     }
 
     public void _Load()
@@ -68,6 +95,11 @@ public class ModemProbe : UdonSharpBehaviour
 
     public override void OnVideoReady()
     {
+        if (_matrix >= 0)
+        {
+            Log("matrix " + _matrix + " ready dur=" + player.GetDuration().ToString("F3"));
+            return;
+        }
         Log("event ready dur=" + player.GetDuration().ToString("F3"));
         player.Play();
         _sampling = true;
@@ -78,27 +110,39 @@ public class ModemProbe : UdonSharpBehaviour
     public void _SeekStep()
     {
         if (_failed) return;
-        int phases = seekFps > 0 && seekPhases.Length > 0 ? seekPhases.Length : 1;
-        if (_step >= seekTargets.Length * phases)
+        bool virtualSeeks = seekFps > 0 && seekFrames > 1;
+        int total = virtualSeeks ? seekIntervals.Length * seeksPerInterval : seekTargets.Length;
+        if (_step >= total)
         {
             Log("seeks done " + State());
             _step = 0;
             SendCustomEventDelayedSeconds(nameof(_PauseStep), settleSeconds);
             return;
         }
-        float t = Mathf.Clamp(seekTargets[_step / phases], 0f, Mathf.Max(0f, player.GetDuration() - 0.1f));
-        int frame = -1;
-        float phase = 0f;
-        if (seekFps > 0)
+        float interval = seekInterval;
+        if (virtualSeeks)
         {
-            frame = Mathf.Max(1, Mathf.FloorToInt(t * seekFps));
-            phase = seekPhases.Length > 0 ? seekPhases[_step % phases] : 0.5f;
-            t = (frame - 1 + phase) / seekFps;
+            interval = seekIntervals[_step / seeksPerInterval];
+            int burst = interval < 0f ? Mathf.RoundToInt(-interval) : 1;
+            for (int i = 0; i < burst && _step < total; i++)
+            {
+                int frame = UnityEngine.Random.Range(1, seekFrames);
+                // Float32 loses whole frames past 2^24; do the division in double.
+                float t = (float)((frame - 0.5) / seekFps);
+                Log("seek " + t.ToString("F6") + " frame=" + frame + " interval=" + interval.ToString("F3") + " from " + State());
+                player.SetTime(t);
+                if (i + 1 < burst) _step++;
+            }
         }
-        Log("seek " + t.ToString("F6") + (frame >= 0 ? " frame=" + frame + " phase=" + phase.ToString("F2") : "") + " from " + State());
-        player.SetTime(t);
+        else
+        {
+            float t = Mathf.Clamp(seekTargets[_step], 0f, Mathf.Max(0f, player.GetDuration() - 0.1f));
+            Log("seek " + t.ToString("F6") + " from " + State());
+            player.SetTime(t);
+        }
         _step++;
-        SendCustomEventDelayedSeconds(nameof(_SeekStep), seekInterval);
+        if (interval > 0f) SendCustomEventDelayedSeconds(nameof(_SeekStep), interval);
+        else SendCustomEventDelayedFrames(nameof(_SeekStep), 1);
     }
 
     public void _PauseStep()
@@ -151,6 +195,11 @@ public class ModemProbe : UdonSharpBehaviour
 
     public override void OnVideoError(VideoError videoError)
     {
+        if (_matrix >= 0)
+        {
+            Log("matrix " + _matrix + " failed " + videoError);
+            return;
+        }
         _failed = true;
         _sampling = false;
         Log("event error " + videoError);

@@ -42,7 +42,7 @@ for (const [k, bytes] of buckets) {
 
 // --- probe (VRChat log) ---
 const sessions = new Map<string, string>();
-const seeks: { t: number; player: string; frame: number; phase: number | null; session: string }[] = [];
+const seeks: { t: number; player: string; frame: number; interval: string; session: string }[] = [];
 const probeRe = /\[ModemProbe\] (\d\d:\d\d:\d\d\.\d{3}) (Probe \w+) (.*)$/;
 for (const line of (await Deno.readTextFile(join(dir, "vrchat-probe.log"))).split("\n")) {
   const m = line.match(probeRe);
@@ -54,49 +54,91 @@ for (const line of (await Deno.readTextFile(join(dir, "vrchat-probe.log"))).spli
     const session = path.match(/^\/[sv]\/([^/]+)\//)?.[1];
     if (session) sessions.set(m[2], session);
   }
-  const frame = m[3].match(/^seek .* frame=(\d+)(?: phase=([\d.]+))?/);
+  const frame = m[3].match(/^seek .* frame=(\d+)(?:.* interval=(-?[\d.]+))?/);
   const session = sessions.get(m[2]);
   if (frame && session) {
-    seeks.push({ t, player: m[2], frame: Number(frame[1]), phase: frame[2] ? Number(frame[2]) : null, session });
+    seeks.push({ t, player: m[2], frame: Number(frame[1]), interval: frame[2] ?? "-", session });
   }
 }
 
-// Match the first player range request after each seek, before the next
-// seek (or five seconds). Chrome URL checks and HEADs are not seek evidence.
+// A seek passes when a player range request for its frame arrives within five
+// seconds; at short intervals that request can follow the next seek. Otherwise
+// the first request before the next seek is a mismatch. Chrome URL checks and
+// HEADs are not seek evidence.
+const seekRequests = server.filter((e) => {
+  const req = reqs.get(e.id);
+  return e.ev === "res" && e.status === 206 && typeof e.frame === "number" && req?.method === "GET" &&
+    req.headers.range && !/Chrome/i.test(req.headers["user-agent"] ?? "");
+});
+const used = new Set<number>();
+type Block = { player: string; interval: string; n: number; passed: number; latency: number[]; first: number; last: number; bits: number; ids: number[] };
+const blocks = new Map<string, Block>();
 let passed = 0;
-// player -> phase -> (actual - expected, or "none") -> count
-const offsets = new Map<string, Map<string, Map<string, number>>>();
+const delivered: { t: number; bits: number }[] = [];
 for (let i = 0; i < seeks.length; i++) {
   const seek = seeks[i];
   const next = seeks.slice(i + 1).find((s) => s.player === seek.player);
-  const deadline = Math.min(next?.t ?? Infinity, seek.t + 5000);
-  const response = server.find((e) => {
-    const req = reqs.get(e.id);
-    return e.ev === "res" && e.status === 206 && e.session === seek.session &&
-      typeof e.frame === "number" && req?.method === "GET" && req.headers.range &&
-      !/Chrome/i.test(req.headers["user-agent"] ?? "") && req.t >= seek.t && req.t < deadline;
-  });
+  const after = seekRequests.filter((e) => e.session === seek.session && reqs.get(e.id)!.t >= seek.t && reqs.get(e.id)!.t < seek.t + 5000);
+  const match = after.find((e) => e.frame === seek.frame && !used.has(e.id));
+  const response = match ?? after.find((e) => reqs.get(e.id)!.t < (next?.t ?? Infinity));
   const req = response && reqs.get(response.id)!;
-  const ok = response?.frame === seek.frame;
-  if (ok) passed++;
-  const byPhase = offsets.get(seek.player) ?? new Map<string, Map<string, number>>();
-  offsets.set(seek.player, byPhase);
-  const phase = seek.phase === null ? "-" : seek.phase.toFixed(2);
-  const counts = byPhase.get(phase) ?? new Map<string, number>();
-  byPhase.set(phase, counts);
-  const delta = response ? `${response.frame - seek.frame >= 0 ? "+" : ""}${response.frame - seek.frame}` : "none";
-  counts.set(delta, (counts.get(delta) ?? 0) + 1);
-  events.push({ t: seek.t, text: `${seek.player} seek grade=${ok ? "PASS" : response ? "MISMATCH" : "NO REQUEST"} expected=${seek.frame}` +
-    (response ? ` actual=${response.frame} latency=${(req.t - seek.t).toFixed(1)} ms #${response.id}` : "") });
+  if (match) { passed++; used.add(match.id); }
+  const key = `${seek.player} interval=${seek.interval}`;
+  const block = blocks.get(key) ?? { player: seek.player, interval: seek.interval, n: 0, passed: 0, latency: [], first: seek.t, last: seek.t, bits: 0, ids: [] };
+  blocks.set(key, block);
+  block.n++;
+  block.last = seek.t;
+  if (match) {
+    block.passed++;
+    block.latency.push(req!.t - seek.t);
+    block.bits = Math.log2(match.frames - 1);
+    block.ids.push(match.id);
+    delivered.push({ t: seek.t, bits: Math.log2(match.frames - 1) });
+  }
+  events.push({ t: seek.t, text: `${seek.player} seek grade=${match ? "PASS" : response ? "MISMATCH" : "NO REQUEST"} expected=${seek.frame}` +
+    (response ? ` actual=${response.frame} latency=${(req!.t - seek.t).toFixed(1)} ms #${response.id}` : "") });
+}
+// Matrix mode: which URLs each player accepted.
+const matrix = new Map<string, string>();
+for (const e of events) {
+  const m = e.text.match(/^(Probe \w+)\s+matrix (\d+) (load|ready|failed) ?(.*)$/);
+  if (!m) continue;
+  const key = `${m[1]} ${m[2]}`;
+  if (m[3] === "load") matrix.set(key, `${m[4]} -> no event`);
+  else matrix.set(key, `${matrix.get(key)?.replace(/ -> .*$/, "")} -> ${m[3]} ${m[4]}`);
+}
+if (matrix.size) {
+  console.log("Matrix:");
+  for (const [k, v] of matrix) console.log(`  ${k} ${v.replace(/^https?:\/\/[^/]+/, "")}`);
 }
 if (seeks.length) {
   console.log(`Virtual seeks: ${passed}/${seeks.length} matched`);
-  // Frame offset of the requested sample by seek phase within the frame.
-  for (const [player, byPhase] of offsets) {
-    for (const [phase, counts] of [...byPhase].sort()) {
-      console.log(`  ${player} phase=${phase} ${[...counts].map(([d, n]) => `${d}:${n}`).join(" ")}`);
-    }
+  // Requests during a block that no seek accounts for show coalescing or retries.
+  for (const b of blocks.values()) {
+    const session = seeks.find((s) => s.player === b.player)!.session;
+    const extra = seekRequests.filter((e) => e.session === session && !used.has(e.id) &&
+      reqs.get(e.id)!.t >= b.first && reqs.get(e.id)!.t <= b.last + 200).length;
+    const span = (b.last - b.first) / 1000;
+    const rate = span > 0 ? (b.passed - 1) / span : 0;
+    // Request ids are assigned in arrival order, so a decrease is a reorder.
+    const reordered = b.ids.filter((id, i) => i > 0 && id < b.ids[i - 1]).length;
+    const sorted = [...b.latency].sort((x, y) => x - y);
+    const p99 = sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.99))] : 0;
+    const lat = b.latency.length ? `latency mean=${(b.latency.reduce((a, x) => a + x, 0) / b.latency.length).toFixed(1)} p99=${p99.toFixed(1)} max=${Math.max(...b.latency).toFixed(1)} ms` : "";
+    console.log(`  ${b.player} interval=${b.interval} ${b.passed}/${b.n} extra=${extra} reordered=${reordered} ${rate.toFixed(1)} seeks/s ${(rate * b.bits).toFixed(0)} bit/s ${lat}`);
   }
+  // Aggregate across players: best 1 s and 10 s windows of matched seeks.
+  delivered.sort((x, y) => x.t - y.t);
+  const best = (ms: number) => {
+    let top = 0;
+    for (let a = 0, b = 0, sum = 0; b < delivered.length; b++) {
+      sum += delivered[b].bits;
+      while (delivered[b].t - delivered[a].t >= ms) sum -= delivered[a++].bits;
+      top = Math.max(top, sum * 1000 / ms);
+    }
+    return top;
+  };
+  console.log(`  aggregate best 1 s ${best(1000).toFixed(0)} bit/s, best 10 s ${best(10000).toFixed(0)} bit/s`);
 }
 
 events.sort((a, b) => a.t - b.t);
