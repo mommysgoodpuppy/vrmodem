@@ -19,6 +19,7 @@ import { liveMp4, LiveParams, liveStream, prepare } from "./live_mp4.ts";
 import { frameOf, symbolAt } from "./modem/link.ts";
 import { ModemSession } from "./modem/session.ts";
 import { Passt } from "./modem/passt.ts";
+import { serveHttpsProxy } from "./https_proxy.ts";
 import { SynFix } from "./modem/synfix.ts";
 import { describe, dotted } from "./modem/ip.ts";
 
@@ -204,6 +205,10 @@ async function serveDown(req: Request, c: Client, url: URL, id: number): Promise
   });
   return new Response(body, { status, headers });
 }
+
+// https for the guest, whose own TLS fails (https_proxy.ts): GATEWAY_HTTPS_PROXY=0 for none
+const HTTPS_PROXY = Number(Deno.env.get("GATEWAY_HTTPS_PROXY") ?? "3128");
+if (HTTPS_PROXY) serveHttpsProxy(HTTPS_PROXY, log);
 
 let nextId = 1;
 Deno.serve({ hostname: HOST, port: Number(PORT), onListen: () => console.log(`gateway on http://${HOST}:${PORT}/  log: ${logPath}`) }, (req, info) => {
