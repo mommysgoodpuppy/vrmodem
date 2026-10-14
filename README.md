@@ -33,6 +33,8 @@ Pause modulation is a dead end, and the downlink hasn't been built yet. See
 | `server/virtual_mp4_test.ts` | Tests for virtual MP4s, HTTP ranges and pacing, and analyzer grading (`deno task test`) |
 | `server/run_probe.ts` | Orchestrator: headless export, server, VRChat launch, log collection (`deno task probe`) |
 | `server/analyze.ts` | Merged client/server timeline, seek grading, per-rate and aggregate throughput (`deno task analyze`) |
+| `server/downlink.ts` | Downlink test frame layout: header, calibration, gray blocks, reference decoder |
+| `server/gen_downlink.ts` | Downlink test videos and an offline ffmpeg check (`deno task gen-down [--check]`) |
 | `server/delay_proxy.ts` | Userspace TCP proxy that emulates WAN RTT, handshake cancellation included (`deno task delay`); with `--rtt 0`, a plain relay |
 | `unity/ModemProbe.cs` | UdonSharp probe: automatic load, seek and pause patterns, position sampling |
 | `unity/Editor/ProbeSceneBuilder.cs` | Generates the probe scene, headless or from the editor menu |
@@ -210,6 +212,24 @@ Current state as of 2026-10-14. Desktop VRChat under `proton-rtsp-11.0`,
   multiplexes every connection over one stream, so seeks arrived up to 3.6 s
   late, reordered, and lost in bursts.
 
+### Downlink (offline only so far)
+
+`deno task gen-down --check` encodes 1280×720, 60 fps test videos with x264
+(keyframe every second, CBR) and decodes them again with ffmpeg. Each frame
+carries data in gray blocks: a 16 px header with a sync pair, calibration
+levels, and a 24-bit frame number (`server/downlink.ts`).
+
+| Blocks, levels | Raw rate | 8 Mbit/s | 20 Mbit/s |
+| --- | --- | --- | --- |
+| 16 px, 2 or 4 | 0.21 / 0.42 Mbit/s | 0 errors | 0 errors |
+| 8 px, 2 | 0.84 Mbit/s | 0 errors | 0 errors |
+| 8 px, 4 | 1.69 Mbit/s | 0 errors | 0 errors |
+| 4 px, 2 | 3.38 Mbit/s | 7.3% | 0 errors |
+| 4 px, 4 | 6.76 Mbit/s | 41% | 0.0007% |
+
+This is luma only, decoded by ffmpeg. The in-world path (WMF, Unity's color
+conversion, a linear-space project) and live-stream latency are untested.
+
 ### Dead ends
 
 - **Pause and rate modulation.** With paced media the buffer never fills, so
@@ -243,6 +263,6 @@ Current state as of 2026-10-14. Desktop VRChat under `proton-rtsp-11.0`,
 - Whether any globally trusted host can serve custom byte ranges (the only
   path that needs no viewer setting).
 - Behavior on native Windows, and at VR frame rates (90/120 Hz).
-- Downlink: data video read back through `VRCAsyncGPUReadback`, throughput
-  and error rate.
+- Downlink in the world: the same test videos decoded from the video player's
+  RenderTexture, and a live, low-latency transport (RTSP, HLS, or fragmented MP4).
 - Whether playback rate is exposed to Udon (assumed no).
