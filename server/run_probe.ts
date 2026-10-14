@@ -8,6 +8,10 @@
 //
 //   deno task probe [--no-build] [--url URL] [--matrix "URL URL ..."] [--rtt MS] [--lanes N] [--listen HOST:PORT]
 //                   [--intervals 0.1,0,-2] [--seeks 400] [--timeout 300] [--vr]
+//                   [--down [NAME,NAME...]]
+//
+// --down builds the downlink scene instead: every video of
+// media/down/configs.json (or the named ones) played and decoded in turn.
 //
 // --rtt routes the baked URLs through delay_proxy.ts on port 8788, emulating
 // that round-trip time (and a TCP handshake) without root. --lanes builds N
@@ -20,7 +24,7 @@ import { join } from "jsr:@std/path@1";
 
 const args = parseArgs(Deno.args, {
   boolean: ["no-build", "vr"],
-  string: ["url", "matrix", "rtt", "lanes", "intervals", "seeks", "listen", "timeout"],
+  string: ["url", "matrix", "rtt", "lanes", "intervals", "seeks", "listen", "timeout", "down"],
 });
 const HOME = Deno.env.get("HOME")!;
 const REPO = new URL("../", import.meta.url).pathname;
@@ -29,10 +33,23 @@ const UNITY = `${HOME}/Unity/Hub/Editor/2022.3.22f1/Editor/Unity`;
 const VRC_LOGS =
   `${HOME}/.local/share/Steam/steamapps/compatdata/438100/pfx/drive_c/users/steamuser/AppData/LocalLow/VRChat/VRChat`;
 const lanes = Number(args.lanes ?? 0);
-const PROBES = lanes > 0 ? Array.from({ length: lanes }, (_, i) => `Probe AVPro${i}`) : ["Probe AVPro", "Probe Unity"];
 const viaProxy = (u: string) => args.rtt === undefined ? u : u.replaceAll("127.0.0.1:8787", "127.0.0.1:8788");
 const url = viaProxy(args.url ?? "http://127.0.0.1:8787/v/{session}/probe.mp4?fps=60&seconds=69904&lead=30&pace=1");
 const matrixUrls = viaProxy(args.matrix ?? "");
+// --down with no names is the empty string: every config.
+let downSpec = "";
+if (args.down !== undefined) {
+  const { configs } = JSON.parse(await Deno.readTextFile(join(REPO, "media/down/configs.json")));
+  const names = args.down ? new Set(String(args.down).split(",")) : null;
+  const base = args.listen ? `http://${args.listen.replace(/^0\.0\.0\.0:/, "127.0.0.1:")}` : "http://127.0.0.1:8787";
+  downSpec = configs.filter((c: { name: string }) => !names || names.has(c.name))
+    .map((c: { name: string; w: number; h: number; block: number; levels: number; seed: number }) =>
+      [viaProxy(`${base}/s/down/down/${c.name}.mp4`), c.w, c.h, c.block, c.levels, c.seed].join("|"))
+    .join(";");
+  if (!downSpec) throw new Error(`no downlink configs match ${args.down}`);
+}
+const PROBES = downSpec ? ["Probe Down"]
+  : lanes > 0 ? Array.from({ length: lanes }, (_, i) => `Probe AVPro${i}`) : ["Probe AVPro", "Probe Unity"];
 const timeoutMs = Number(args.timeout ?? 300) * 1000;
 
 const runDir = join(REPO, "logs", `run-${new Date().toISOString().replaceAll(":", "-").slice(0, 19)}`);
@@ -67,7 +84,8 @@ if (args["no-build"]) {
     "-projectPath", PROJECT, "-executeMethod", "WorldExport.Build",
     "-logFile", join(runDir, "unity-export.log"),
   ], { VRMODEM_URL: url, VRMODEM_MATRIX: matrixUrls, VRMODEM_LANES: String(lanes),
-    VRMODEM_INTERVALS: args.intervals ?? "", VRMODEM_SEEKS: args.seeks ?? "" });
+    VRMODEM_INTERVALS: args.intervals ?? "", VRMODEM_SEEKS: args.seeks ?? "",
+    VRMODEM_DOWN: downSpec });
   if (code !== 0) throw new Error(`export failed (exit ${code}), see ${runDir}/unity-export.log`);
   vrcw = (await Deno.readTextFile(resultFile)).trim();
 }

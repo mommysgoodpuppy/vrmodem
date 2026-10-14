@@ -8,6 +8,8 @@
 // URLs) switches both probes to matrix mode: load each URL, log ready/failed.
 // VRMODEM_INTERVALS (comma-separated seconds; 0 = every Udon frame, -k = k per
 // frame) and VRMODEM_SEEKS (per interval) override the virtual seek schedule.
+// VRMODEM_DOWN ("url|w|h|block|levels|seed;...") builds the downlink scene
+// instead: one Unity player and a DownProbe that decodes each test video.
 //
 // Menu: vrmodem > Build Probe Scene
 // Batch: Unity -batchmode -quit -projectPath <proj> -executeMethod ProbeSceneBuilder.Build
@@ -29,6 +31,10 @@ public static class ProbeSceneBuilder
     const string ScriptPath = "Assets/vrmodem/ModemProbe.cs";
     const string ProgramPath = "Assets/vrmodem/ModemProbe.asset";
     const string TexturePath = "Assets/vrmodem/ProbeVideo.renderTexture";
+    const string DownScriptPath = "Assets/vrmodem/DownProbe.cs";
+    const string DownProgramPath = "Assets/vrmodem/DownProbe.asset";
+    // Project-only assets, outside the repository's symlinked folder.
+    const string GeneratedDir = "Assets/Generated";
     const string WorldPrefab = "Packages/com.vrchat.worlds/Samples/UdonExampleScene/Prefabs/VRCWorld.prefab";
     const string DefaultUrl = "http://127.0.0.1:8787/v/{session}/probe.mp4?fps=60&seconds=69904&lead=30&pace=1";
 
@@ -50,7 +56,9 @@ public static class ProbeSceneBuilder
 
     static void BuildScene()
     {
-        EnsureProgramAsset();
+        EnsureProgram(ScriptPath, ProgramPath);
+        EnsureProgram(DownScriptPath, DownProgramPath);
+        UdonSharpCompilerV1.CompileSync(new UdonSharpCompileOptions());
         var url = System.Environment.GetEnvironmentVariable("VRMODEM_URL");
         if (string.IsNullOrEmpty(url)) url = DefaultUrl;
         var matrix = (System.Environment.GetEnvironmentVariable("VRMODEM_MATRIX") ?? "")
@@ -64,8 +72,10 @@ public static class ProbeSceneBuilder
 
         // VRMODEM_LANES=N builds N AVPro players (Probe AVPro0..) as parallel
         // uplink lanes, with URL loads staggered for the rate limit.
+        var down = System.Environment.GetEnvironmentVariable("VRMODEM_DOWN");
         int lanes;
-        if (int.TryParse(System.Environment.GetEnvironmentVariable("VRMODEM_LANES"), out lanes) && lanes > 0)
+        if (!string.IsNullOrEmpty(down)) AddDownProbe(down);
+        else if (int.TryParse(System.Environment.GetEnvironmentVariable("VRMODEM_LANES"), out lanes) && lanes > 0)
         {
             for (int i = 0; i < lanes; i++)
             {
@@ -149,17 +159,83 @@ public static class ProbeSceneBuilder
         UdonSharpEditorUtility.CopyProxyToUdon(probe);
     }
 
-    static void EnsureProgramAsset()
+    static void EnsureProgram(string scriptPath, string programPath)
     {
-        if (AssetDatabase.LoadAssetAtPath<UdonSharpProgramAsset>(ProgramPath) == null)
+        if (AssetDatabase.LoadAssetAtPath<UdonSharpProgramAsset>(programPath) != null) return;
+        var asset = ScriptableObject.CreateInstance<UdonSharpProgramAsset>();
+        asset.sourceCsScript = AssetDatabase.LoadAssetAtPath<MonoScript>(scriptPath);
+        AssetDatabase.CreateAsset(asset, programPath);
+        AssetDatabase.SaveAssets();
+        Debug.Log("[ProbeSceneBuilder] created " + programPath);
+    }
+
+    // A generated RenderTexture asset, recreated when its size or format changed.
+    static RenderTexture GeneratedTexture(string name, int w, int h, RenderTextureFormat format, bool linear)
+    {
+        System.IO.Directory.CreateDirectory(GeneratedDir);
+        var path = GeneratedDir + "/" + name + ".renderTexture";
+        var rt = AssetDatabase.LoadAssetAtPath<RenderTexture>(path);
+        if (rt != null && rt.width == w && rt.height == h && rt.format == format && rt.sRGB == !linear) return rt;
+        if (rt != null) AssetDatabase.DeleteAsset(path);
+        rt = new RenderTexture(w, h, 0, format, linear ? RenderTextureReadWrite.Linear : RenderTextureReadWrite.sRGB);
+        rt.useMipMap = false;
+        rt.filterMode = FilterMode.Point;
+        AssetDatabase.CreateAsset(rt, path);
+        return rt;
+    }
+
+    static void AddDownProbe(string spec)
+    {
+        var entries = spec.Split(new[] { ';' }, System.StringSplitOptions.RemoveEmptyEntries);
+        int n = entries.Length;
+        var urls = new VRCUrl[n];
+        var blocks = new int[n];
+        var levels = new int[n];
+        var seeds = new int[n];
+        var decoded = new RenderTexture[n];
+        int w = 0, h = 0;
+        for (int i = 0; i < n; i++)
         {
-            var asset = ScriptableObject.CreateInstance<UdonSharpProgramAsset>();
-            asset.sourceCsScript = AssetDatabase.LoadAssetAtPath<MonoScript>(ScriptPath);
-            AssetDatabase.CreateAsset(asset, ProgramPath);
-            AssetDatabase.SaveAssets();
-            Debug.Log("[ProbeSceneBuilder] created " + ProgramPath);
+            var f = entries[i].Split('|');
+            urls[i] = new VRCUrl(f[0]);
+            w = int.Parse(f[1]);
+            h = int.Parse(f[2]);
+            blocks[i] = int.Parse(f[3]);
+            levels[i] = int.Parse(f[4]);
+            seeds[i] = int.Parse(f[5]);
+            // Downlink.shader's target: cols x (rows + 1), float, linear (DOWNLINK.md).
+            decoded[i] = GeneratedTexture("DownDecoded" + i, w / blocks[i], (h - 16) / blocks[i] + 1, RenderTextureFormat.ARGBFloat, true);
         }
-        UdonSharpCompilerV1.CompileSync(new UdonSharpCompileOptions());
+        var video = GeneratedTexture("DownVideo", w, h, RenderTextureFormat.ARGB32, false);
+
+        var matPath = GeneratedDir + "/Downlink.mat";
+        var mat = AssetDatabase.LoadAssetAtPath<Material>(matPath);
+        if (mat == null)
+        {
+            mat = new Material(Shader.Find("vrmodem/Downlink"));
+            AssetDatabase.CreateAsset(mat, matPath);
+        }
+
+        var go = new GameObject("Probe Down");
+        var player = go.AddComponent<VRCUnityVideoPlayer>();
+        var so = new SerializedObject(player);
+        so.FindProperty("renderMode").intValue = 0; // RenderTexture
+        so.FindProperty("targetTexture").objectReferenceValue = video;
+        so.FindProperty("loop").boolValue = false;
+        so.ApplyModifiedPropertiesWithoutUndo();
+
+        var probe = UdonSharpUndo.AddComponent<DownProbe>(go);
+        probe.player = player;
+        probe.video = video;
+        probe.decode = mat;
+        probe.decoded = decoded;
+        probe.urls = urls;
+        probe.blockSizes = blocks;
+        probe.levels = levels;
+        probe.seeds = seeds;
+        UdonSharpEditorUtility.CopyProxyToUdon(probe);
+        AssetDatabase.SaveAssets();
+        Debug.Log("[ProbeSceneBuilder] down probe with " + n + " videos " + w + "x" + h);
     }
 
     static RenderTexture EnsureRenderTexture()
