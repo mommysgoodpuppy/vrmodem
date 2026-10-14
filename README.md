@@ -18,7 +18,7 @@ an external server, built only from what Udon video players already do.
 - **Session identity:** paste one session URL into a `VRCUrlInputField` (allowed
   at runtime). Fall back to IP matching.
 
-Nothing below is verified in VRChat yet. The current phase is the probe.
+See [Findings](#findings) for what has been measured so far.
 
 ## Layout
 
@@ -67,6 +67,47 @@ only, with "Allow Untrusted URLs" turned on in the client.
 
 Linux editor prerequisites: `libxml2-legacy` (pacman) and the Windows Build
 Support (Mono) Hub module.
+
+## Automated run
+
+```sh
+cd server
+deno task probe            # export world, start server, launch VRChat (desktop), collect logs
+deno task analyze ../logs/run-<time>    # merged timeline -> timeline.txt
+```
+
+`probe` exports headless, then launches VRChat with
+`steam -applaunch 438100 --url=create?...&url=file:///Z:<vrcw> --watch-worlds --no-vr`.
+It follows the client's `output_log` until each `ModemProbe` reports done, then
+saves everything under `logs/run-<time>/`. The project must not be open in the
+editor at the same time.
+
+## Findings
+
+### Run 2026-10-14T08-30 (proton-rtsp-11.0, desktop, intra MP4 over 127.0.0.1)
+
+- **Local URLs work.** `http://127.0.0.1` played in both players in a local
+  test world, with no Untrusted URLs change.
+- **Both players use Windows Media Foundation under Proton.** The user agent
+  is `NSPlayer/12.00.19041.4894 WMFSDK/12.00.19041.4894` for AVPro and for the
+  Unity player. A request with a Chrome user agent precedes each load (VRChat's
+  URL check) and is aborted after a few hundred KiB.
+- **Every seek is visible to the server.** `SetTime` opens a new TCP
+  connection with `Range: bytes=<offset>` 2–20 ms after the Udon call, then
+  aborts the previous connection. This happens even when the target is already
+  buffered.
+- **The offset is deterministic.** It is exactly the target frame's sample
+  offset, and identical across both players (seek 10 s → `807590`). With an
+  all-intra file, each seek therefore carries log2(frames) bits; this file has
+  3600 frames, about 11.8 bits. A 1 Hz seek rate was clean; higher rates are
+  untested.
+- **Read-ahead is capped at about 4.5 MiB, then TCP backpressure.** Every
+  connection pulled roughly 4.6–4.8 MB at once, then stalled. For this file
+  (about 79 KB/s) that is about 58 s ahead, so pause and rate modulation can't
+  be seen yet. The pause channel needs a high-bitrate stream (filler data) or
+  server pacing (`?kbps=`) so the buffer drains in about a second.
+- Both players looped at the end (`event loop`): `loop` defaults to on for
+  components added from code.
 
 ## Probe protocol
 

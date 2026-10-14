@@ -3,6 +3,7 @@
 //
 //   deno task serve            # 127.0.0.1:8787
 //   HOST=0.0.0.0 PORT=9000 deno task serve
+//   LOG_PATH=/some/file.jsonl overrides the per-run log file
 //
 // URLs: /s/<session>/<media path>[?kbps=N]
 //   <session> is free-form and only used to group log lines.
@@ -25,7 +26,8 @@ const CONTENT_TYPES: Record<string, string> = {
 };
 
 await Deno.mkdir(LOG_DIR, { recursive: true });
-const logPath = join(LOG_DIR, `${new Date().toISOString().replaceAll(":", "-")}.jsonl`);
+const logPath = Deno.env.get("LOG_PATH") ??
+  join(LOG_DIR, `${new Date().toISOString().replaceAll(":", "-")}.jsonl`);
 const logFile = await Deno.open(logPath, { create: true, append: true });
 const enc = new TextEncoder();
 
