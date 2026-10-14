@@ -71,16 +71,47 @@ const seekRequests = server.filter((e) => {
     req.headers.range && !/Chrome/i.test(req.headers["user-agent"] ?? "");
 });
 const used = new Set<number>();
+// Indexes keep grading linear-ish for long runs with hundreds of thousands of
+// seeks: requests by session in arrival order, and by session and frame.
+const reqT = (e: { id: number }) => reqs.get(e.id)!.t;
+const bySession = new Map<string, typeof seekRequests>();
+const byFrame = new Map<string, typeof seekRequests>();
+for (const e of [...seekRequests].sort((a, b) => reqT(a) - reqT(b))) {
+  if (!bySession.has(e.session)) bySession.set(e.session, []);
+  bySession.get(e.session)!.push(e);
+  const k = `${e.session}:${e.frame}`;
+  if (!byFrame.has(k)) byFrame.set(k, []);
+  byFrame.get(k)!.push(e);
+}
+// First index in a time-sorted request list at or after t.
+const lowerBound = (list: typeof seekRequests, t: number) => {
+  let lo = 0, hi = list.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (reqT(list[mid]) < t) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+};
+const nextSeekT: number[] = new Array(seeks.length);
+{
+  const later = new Map<string, number>();
+  for (let i = seeks.length - 1; i >= 0; i--) {
+    nextSeekT[i] = later.get(seeks[i].player) ?? Infinity;
+    later.set(seeks[i].player, seeks[i].t);
+  }
+}
 type Block = { player: string; interval: string; n: number; passed: number; latency: number[]; first: number; last: number; bits: number; ids: number[]; late: number };
 const blocks = new Map<string, Block>();
 let passed = 0;
 const delivered: { t: number; bits: number }[] = [];
 for (let i = 0; i < seeks.length; i++) {
   const seek = seeks[i];
-  const next = seeks.slice(i + 1).find((s) => s.player === seek.player);
-  const after = seekRequests.filter((e) => e.session === seek.session && reqs.get(e.id)!.t >= seek.t && reqs.get(e.id)!.t < seek.t + 5000);
-  const match = after.find((e) => e.frame === seek.frame && !used.has(e.id));
-  const response = match ?? after.find((e) => reqs.get(e.id)!.t < (next?.t ?? Infinity));
+  const sameFrame = byFrame.get(`${seek.session}:${seek.frame}`) ?? [];
+  const match = sameFrame.find((e) => reqT(e) >= seek.t && reqT(e) < seek.t + 5000 && !used.has(e.id));
+  const list = bySession.get(seek.session) ?? [];
+  const first = list[lowerBound(list, seek.t)];
+  const response = match ?? (first && reqT(first) < Math.min(nextSeekT[i], seek.t + 5000) ? first : undefined);
   const req = response && reqs.get(response.id)!;
   if (match) { passed++; used.add(match.id); }
   const key = `${seek.player} interval=${seek.interval}`;
@@ -88,7 +119,7 @@ for (let i = 0; i < seeks.length; i++) {
   blocks.set(key, block);
   block.n++;
   // Requested eventually, but outside the five-second window.
-  if (!match && seekRequests.some((e) => e.session === seek.session && e.frame === seek.frame && reqs.get(e.id)!.t >= seek.t)) block.late++;
+  if (!match && sameFrame.some((e) => reqT(e) >= seek.t)) block.late++;
   block.last = seek.t;
   if (match) {
     block.passed++;
@@ -118,15 +149,18 @@ if (seeks.length) {
   // Requests during a block that no seek accounts for show coalescing or retries.
   for (const b of blocks.values()) {
     const session = seeks.find((s) => s.player === b.player)!.session;
-    const extra = seekRequests.filter((e) => e.session === session && !used.has(e.id) &&
-      reqs.get(e.id)!.t >= b.first && reqs.get(e.id)!.t <= b.last + 200).length;
+    const list = bySession.get(session) ?? [];
+    let extra = 0;
+    for (let j = lowerBound(list, b.first); j < list.length && reqT(list[j]) <= b.last + 200; j++) {
+      if (!used.has(list[j].id)) extra++;
+    }
     const span = (b.last - b.first) / 1000;
     const rate = span > 0 ? (b.passed - 1) / span : 0;
     // Request ids are assigned in arrival order, so a decrease is a reorder.
     const reordered = b.ids.filter((id, i) => i > 0 && id < b.ids[i - 1]).length;
     const sorted = [...b.latency].sort((x, y) => x - y);
     const p99 = sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.99))] : 0;
-    const lat = b.latency.length ? `latency mean=${(b.latency.reduce((a, x) => a + x, 0) / b.latency.length).toFixed(1)} p99=${p99.toFixed(1)} max=${Math.max(...b.latency).toFixed(1)} ms` : "";
+    const lat = b.latency.length ? `latency mean=${(b.latency.reduce((a, x) => a + x, 0) / b.latency.length).toFixed(1)} p99=${p99.toFixed(1)} max=${sorted[sorted.length - 1].toFixed(1)} ms` : "";
     console.log(`  ${b.player} interval=${b.interval} ${b.passed}/${b.n} late=${b.late} extra=${extra} reordered=${reordered} ${rate.toFixed(1)} seeks/s ${(rate * b.bits).toFixed(0)} bit/s ${lat}`);
   }
   // Aggregate across players: best 1 s and 10 s windows of matched seeks.
