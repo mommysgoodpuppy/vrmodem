@@ -10,6 +10,7 @@
 // frame) and VRMODEM_SEEKS (per interval) override the virtual seek schedule.
 // VRMODEM_DOWN ("url|w|h|block|levels|seed;...") builds the downlink scene
 // instead: one Unity player and a DownProbe that decodes each test video.
+// VRMODEM_DOWN_PLAYER=avpro uses an AVPro player drawing into a screen material.
 //
 // Menu: vrmodem > Build Probe Scene
 // Batch: Unity -batchmode -quit -projectPath <proj> -executeMethod ProbeSceneBuilder.Build
@@ -216,17 +217,55 @@ public static class ProbeSceneBuilder
             AssetDatabase.CreateAsset(mat, matPath);
         }
 
+        bool avpro = System.Environment.GetEnvironmentVariable("VRMODEM_DOWN_PLAYER") == "avpro";
         var go = new GameObject("Probe Down");
-        var player = go.AddComponent<VRCUnityVideoPlayer>();
-        var so = new SerializedObject(player);
-        so.FindProperty("renderMode").intValue = 0; // RenderTexture
-        so.FindProperty("targetTexture").objectReferenceValue = video;
-        so.FindProperty("loop").boolValue = false;
-        so.ApplyModifiedPropertiesWithoutUndo();
+        BaseVRCVideoPlayer player;
+        Material screen = null;
+        if (avpro)
+        {
+            player = go.AddComponent<VRCAVProVideoPlayer>();
+            // A quad nobody looks at: AVPro puts its texture into the quad's material.
+            var quad = GameObject.CreatePrimitive(PrimitiveType.Quad);
+            quad.name = "Down Screen";
+            quad.transform.position = new Vector3(0, -10, 0);
+            var screenPath = GeneratedDir + "/DownScreen.mat";
+            screen = AssetDatabase.LoadAssetAtPath<Material>(screenPath);
+            if (screen == null)
+            {
+                screen = new Material(Shader.Find("Unlit/Texture"));
+                AssetDatabase.CreateAsset(screen, screenPath);
+            }
+            quad.GetComponent<MeshRenderer>().sharedMaterial = screen;
+            var screenComponent = quad.AddComponent<VRCAVProVideoScreen>();
+            var ss = new SerializedObject(screenComponent);
+            // The player reference is the one object field of the player's type.
+            var it = ss.GetIterator();
+            while (it.NextVisible(true))
+            {
+                if (it.propertyType == SerializedPropertyType.ObjectReference && it.type.Contains("VRCAVProVideoPlayer"))
+                    it.objectReferenceValue = player;
+            }
+            ss.FindProperty("materialIndex").intValue = 0;
+            ss.FindProperty("textureProperty").stringValue = "_MainTex";
+            ss.FindProperty("useSharedMaterial").boolValue = true;
+            ss.ApplyModifiedPropertiesWithoutUndo();
+        }
+        else
+        {
+            player = go.AddComponent<VRCUnityVideoPlayer>();
+            var so = new SerializedObject(player);
+            so.FindProperty("renderMode").intValue = 0; // RenderTexture
+            so.FindProperty("targetTexture").objectReferenceValue = video;
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+        var loop = new SerializedObject(player);
+        loop.FindProperty("loop").boolValue = false;
+        loop.ApplyModifiedPropertiesWithoutUndo();
 
         var probe = UdonSharpUndo.AddComponent<DownProbe>(go);
         probe.player = player;
         probe.video = video;
+        probe.screenMaterial = screen;
         probe.decode = mat;
         probe.decoded = decoded;
         probe.urls = urls;
@@ -235,7 +274,7 @@ public static class ProbeSceneBuilder
         probe.seeds = seeds;
         UdonSharpEditorUtility.CopyProxyToUdon(probe);
         AssetDatabase.SaveAssets();
-        Debug.Log("[ProbeSceneBuilder] down probe with " + n + " videos " + w + "x" + h);
+        Debug.Log("[ProbeSceneBuilder] down probe (" + (avpro ? "AVPro" : "Unity") + ") with " + n + " videos " + w + "x" + h);
     }
 
     static RenderTexture EnsureRenderTexture()

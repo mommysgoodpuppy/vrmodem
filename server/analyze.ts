@@ -145,19 +145,20 @@ if (matrix.size) {
   for (const [k, v] of matrix) console.log(`  ${k} ${v.replace(/^https?:\/\/[^/]+/, "")}`);
 }
 // Downlink probe: frames each video delivered to the world, and their errors.
-type Down = { url: string; meta: Map<number, number>; flips: Set<number>; samples: number; errors: number; blocks: number; status: string };
+type Down = { url: string; meta: Map<number, number>; uf: number[]; flips: Set<number>; samples: number; errors: number; blocks: number; status: string };
 const downs = new Map<number, Down>();
 for (const e of events) {
   const m = e.text.match(/^Probe Down\s+down (\d+) (.*)$/);
   if (!m) continue;
   const n = Number(m[1]);
-  const d = downs.get(n) ?? { url: "", meta: new Map(), flips: new Set(), samples: 0, errors: 0, blocks: 0, status: "no event" };
+  const d = downs.get(n) ?? { url: "", meta: new Map(), uf: [], flips: new Set(), samples: 0, errors: 0, blocks: 0, status: "no event" };
   downs.set(n, d);
   let x;
   if ((x = m[2].match(/^load (\S+)/))) d.url = x[1];
-  else if ((x = m[2].match(/^meta frame=(\d+) flip=(\d)/))) {
+  else if ((x = m[2].match(/^meta frame=(\d+) flip=(\d)(?: uf=(\d+))?/))) {
     if (!d.meta.has(Number(x[1]))) d.meta.set(Number(x[1]), e.t);
     d.flips.add(Number(x[2]));
+    if (x[3]) d.uf.push(Number(x[3]));
   } else if ((x = m[2].match(/^frame=\d+ errors=(\d+) blocks=(\d+)/))) {
     d.samples++;
     d.errors += Number(x[1]);
@@ -175,9 +176,11 @@ if (downs.size) {
     const fps = span > 0 ? (frames.length - 1) / span : 0;
     const gaps = frames.length ? frames[frames.length - 1] - frames[0] + 1 - frames.length : 0;
     const ser = d.samples && d.blocks ? d.errors / (d.samples * d.blocks) : NaN;
+    // Udon frames over the same span: a player cap and a slow client look alike otherwise.
+    const ufps = d.uf.length > 1 && span > 0 ? (Math.max(...d.uf) - Math.min(...d.uf)) / span : NaN;
     const mbit = fps * d.blocks * Math.log2(levels) * (1 - (ser || 0)) / 1e6;
     console.log(`  ${n} ${name.padEnd(12)} ${d.status}: ${frames.length} frames ${frames[0] ?? "-"}..${frames[frames.length - 1] ?? "-"} ` +
-      `(${gaps} missing) ${fps.toFixed(1)} fps, flip=${[...d.flips].join("/") || "-"}, ` +
+      `(${gaps} missing) ${fps.toFixed(1)} fps${Number.isNaN(ufps) ? "" : ` (Udon ${ufps.toFixed(1)})`}, flip=${[...d.flips].join("/") || "-"}, ` +
       `${d.samples} sampled, symbol errors ${Number.isNaN(ser) ? "-" : (ser * 100).toFixed(4) + "%"}, ${mbit.toFixed(2)} Mbit/s`);
   }
 }

@@ -20,7 +20,7 @@ an external server, built only from what Udon video players already do.
 
 Status: the seek leak works, with exact 22-bit symbols and parallel lanes.
 Pause modulation is a dead end. The downlink decodes in the world: up to
-3.4 Mbit/s raw from a test video (live streaming is still untested). See
+6.8 Mbit/s from a 60 fps test video (live streaming is still untested). See
 [Findings](#findings) for what has been measured so far, and
 [WORKFLOW.md](WORKFLOW.md) for machine setup, the automated run loop, and gotchas.
 
@@ -218,26 +218,30 @@ Current state as of 2026-10-14. Desktop VRChat under `proton-rtsp-11.0`,
 
 ### Downlink
 
-**In the world (run 11-17, `deno task probe --down`).** The Unity player
-renders into a 1280×720 RenderTexture. `Downlink.shader` decodes each frame,
-and `DownProbe` reads back a one-texel metadata readback every frame and whole
-decoded textures for errors.
+**In the world (runs 11-17 to 11-29, `deno task probe --down`).** A video
+player draws each test video, `Downlink.shader` decodes every frame, and
+`DownProbe` reads back the metadata texel every Udon frame (several readbacks
+in flight) and whole decoded textures for errors.
 
-| Video | Delivered | Symbol errors | Net rate |
+| Video (1280×720) | Unity player | Symbol errors | Net rate |
 | --- | --- | --- | --- |
-| 16 px, 2 or 4 levels | 30 fps | 0 | 0.11 / 0.21 Mbit/s |
-| 8 px, 2 or 4 levels | 30 fps | 0 | 0.42 / 0.84 Mbit/s |
-| 4 px, 2 levels, 8 Mbit/s | 30 fps | 17.4% | – |
-| 4 px, 2 levels, 20 Mbit/s | 30 fps | 0 | 1.69 Mbit/s |
-| 4 px, 4 levels, 20 Mbit/s | 30 fps | 0.017% | 3.38 Mbit/s |
+| 16 px, 2 or 4 levels, 60 fps | all frames | 0 | 0.21 / 0.42 Mbit/s |
+| 8 px, 2 or 4 levels, 60 fps | all frames | 0 | 0.84 / 1.69 Mbit/s |
+| 4 px, 2 levels, 8 Mbit/s | all frames | 17.4% | – |
+| 4 px, 2 levels, 20 Mbit/s | all frames | 0 | 3.38 Mbit/s |
+| 4 px, 4 levels, 20 Mbit/s, 60 fps | 599/599 | 0.016% | 6.76 Mbit/s |
+| 4 px, 4 levels, 20 Mbit/s, 30 fps | 300/300 | 0 | 3.38 Mbit/s |
 
 - **Gray levels survive the real path.** The calibration blocks absorb WMF,
   Unity's color conversion, and the linear-space project. Errors are close to
   the offline ones, slightly worse only at 4 px.
-- **Only every other frame of a 60 fps video arrives.** Every config
-  delivered 300 of 600 frames (all even or all odd), with the client at about
-  60 fps. Whether the Unity player caps at 30 fps, and whether AVPro does too,
-  is next.
+- **Every frame of a 60 fps video arrives**, with the client at 60 fps: the
+  ceiling is one video frame per rendered frame. The first runs (11-17 and
+  11-24) showed every other frame only because the probe waited for each
+  metadata readback before issuing the next.
+- **AVPro decodes the same videos** (run 11-26), upside down in its texture,
+  which the sync handles. That run had the sampling bug, so its frame rate is
+  still to be re-measured.
 
 **Offline (`deno task gen-down --check`).**
 
@@ -280,7 +284,9 @@ This is luma only, decoded by ffmpeg.
 | 09-56 | Plain relay on phone, mobile data | Handshake-limited: 98.6% / 32% / last-only |
 | 10-00 | Handshake-aware proxy, 50 ms | Reproduces 09-56 locally |
 | 10-49 | 8 AVPro lanes, 5 min, per frame | 99.88%, 9.1 kbit/s; losses are clustered hitches |
-| 11-17 | Downlink test videos, Unity player | Decodes in the world, up to 3.38 Mbit/s; 30 of 60 fps arrive |
+| 11-17 | Downlink test videos, Unity player | Decodes in the world (probe then sampled every other frame) |
+| 11-26 | Same videos, AVPro | Decodes too; the picture is flipped |
+| 11-29 | Unity player, fixed sampling | All 60 fps arrive: 6.76 Mbit/s at 0.016% |
 
 ## Open questions
 
@@ -290,6 +296,6 @@ This is luma only, decoded by ffmpeg.
 - Whether any globally trusted host can serve custom byte ranges (the only
   path that needs no viewer setting).
 - Behavior on native Windows, and at VR frame rates (90/120 Hz).
-- Downlink: why only 30 of 60 fps arrive, AVPro as a receiver, and a live,
-  low-latency transport (RTSP, HLS, or fragmented MP4).
+- Downlink: AVPro's frame rate, resolutions above 720p, and a live,
+  low-latency transport (a paced virtual MP4 of padded intra frames, or HLS/RTSP).
 - Whether playback rate is exposed to Udon (assumed no).

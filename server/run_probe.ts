@@ -8,7 +8,7 @@
 //
 //   deno task probe [--no-build] [--url URL] [--matrix "URL URL ..."] [--rtt MS] [--lanes N] [--listen HOST:PORT]
 //                   [--intervals 0.1,0,-2] [--seeks 400] [--timeout 300] [--vr]
-//                   [--down [NAME,NAME...]]
+//                   [--down [NAME,NAME...]] [--down-player unity|avpro]
 //
 // --down builds the downlink scene instead: every video of
 // media/down/configs.json (or the named ones) played and decoded in turn.
@@ -24,7 +24,7 @@ import { join } from "jsr:@std/path@1";
 
 const args = parseArgs(Deno.args, {
   boolean: ["no-build", "vr"],
-  string: ["url", "matrix", "rtt", "lanes", "intervals", "seeks", "listen", "timeout", "down"],
+  string: ["url", "matrix", "rtt", "lanes", "intervals", "seeks", "listen", "timeout", "down", "down-player"],
 });
 const HOME = Deno.env.get("HOME")!;
 const REPO = new URL("../", import.meta.url).pathname;
@@ -85,7 +85,7 @@ if (args["no-build"]) {
     "-logFile", join(runDir, "unity-export.log"),
   ], { VRMODEM_URL: url, VRMODEM_MATRIX: matrixUrls, VRMODEM_LANES: String(lanes),
     VRMODEM_INTERVALS: args.intervals ?? "", VRMODEM_SEEKS: args.seeks ?? "",
-    VRMODEM_DOWN: downSpec });
+    VRMODEM_DOWN: downSpec, VRMODEM_DOWN_PLAYER: args["down-player"] ?? "unity" });
   if (code !== 0) throw new Error(`export failed (exit ${code}), see ${runDir}/unity-export.log`);
   vrcw = (await Deno.readTextFile(resultFile)).trim();
 }

@@ -1,26 +1,33 @@
 // Downlink test videos (downlink.ts layout) into ../media/down, and an offline
 // check that decodes them again with ffmpeg as the world would.
 //
-//   deno task gen-down [--seconds 10] [--fps 60] [--check]
+//   deno task gen-down [--seconds 10] [--fps 60[,30]] [--only NAME,NAME] [--check]
 //
-// Each config is a block size, a number of gray levels and a bitrate, 1280 x 720.
+// Each config is a block size, a number of gray levels, a bitrate and a frame
+// rate, 1280 x 720. Names carry the frame rate when it isn't 60 (b8l4-8M-30fps).
 // media/down/configs.json lists them for the world builder and the analyzer.
 
 import { parseArgs } from "jsr:@std/cli@1/parse-args";
 import { blocks, decode, Layout, render } from "./downlink.ts";
 
-const args = parseArgs(Deno.args, { boolean: ["check"], string: ["seconds", "fps"] });
+const args = parseArgs(Deno.args, { boolean: ["check"], string: ["seconds", "fps", "only"] });
 const seconds = Number(args.seconds ?? 10);
-const fps = Number(args.fps ?? 60);
+const rates = String(args.fps ?? "60").split(",").map(Number);
+const only = args.only ? new Set(String(args.only).split(",")) : null;
 const dir = new URL("../media/down/", import.meta.url).pathname;
 await Deno.mkdir(dir, { recursive: true });
 
 const W = 1280, H = 720;
-const configs: (Layout & { name: string; kbps: number })[] = [];
-for (const block of [16, 8, 4]) {
-  for (const levels of [2, 4]) {
-    for (const kbps of [8000, 20000]) {
-      configs.push({ name: `b${block}l${levels}-${kbps / 1000}M`, w: W, h: H, block, levels, seed: configs.length + 1, kbps });
+const configs: (Layout & { name: string; kbps: number; fps: number })[] = [];
+for (const fps of rates) {
+  for (const block of [16, 8, 4]) {
+    for (const levels of [2, 4]) {
+      for (const kbps of [8000, 20000]) {
+        const base = `b${block}l${levels}-${kbps / 1000}M`;
+        if (only && !only.has(base)) continue;
+        const name = fps === 60 ? base : `${base}-${fps}fps`;
+        configs.push({ name, w: W, h: H, block, levels, seed: configs.length + 1, kbps, fps });
+      }
     }
   }
 }
@@ -29,17 +36,17 @@ async function encode(c: (typeof configs)[number]) {
   const ff = new Deno.Command("ffmpeg", {
     args: [
       "-hide_banner", "-loglevel", "error", "-y",
-      "-f", "rawvideo", "-pix_fmt", "gray", "-s", `${c.w}x${c.h}`, "-r", String(fps), "-i", "-",
+      "-f", "rawvideo", "-pix_fmt", "gray", "-s", `${c.w}x${c.h}`, "-r", String(c.fps), "-i", "-",
       "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
       "-b:v", `${c.kbps}k`, "-maxrate", `${c.kbps}k`, "-bufsize", `${c.kbps}k`,
-      "-x264-params", `keyint=${fps}:min-keyint=${fps}:scenecut=0`,
+      "-x264-params", `keyint=${c.fps}:min-keyint=${c.fps}:scenecut=0`,
       "-movflags", "+faststart", `${dir}${c.name}.mp4`,
     ],
     stdin: "piped",
   }).spawn();
   const w = ff.stdin.getWriter();
   const frame = new Uint8Array(c.w * c.h);
-  for (let n = 0; n < seconds * fps; n++) await w.write(render(c, n, frame));
+  for (let n = 0; n < seconds * c.fps; n++) await w.write(render(c, n, frame));
   await w.close();
   if (!(await ff.status).success) throw new Error(`ffmpeg failed for ${c.name}`);
 }
@@ -72,7 +79,7 @@ async function check(c: (typeof configs)[number]) {
   const b = blocks(c);
   const ser = errors / (b.count * Math.max(1, frames - bad));
   console.log(`${c.name.padEnd(12)} ${frames} frames, ${bad} unreadable, symbol errors ${(ser * 100).toFixed(4)}% (worst frame ${worst}/${b.count}), ` +
-    `${(b.bits * fps / 1e6).toFixed(2)} Mbit/s raw`);
+    `${(b.bits * c.fps / 1e6).toFixed(2)} Mbit/s raw`);
 }
 
 for (const c of configs) {
@@ -80,4 +87,4 @@ for (const c of configs) {
   await encode(c);
   if (args.check) await check(c);
 }
-await Deno.writeTextFile(`${dir}configs.json`, JSON.stringify({ fps, seconds, configs }, null, 2) + "\n");
+await Deno.writeTextFile(`${dir}configs.json`, JSON.stringify({ seconds, configs }, null, 2) + "\n");

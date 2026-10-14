@@ -2,8 +2,10 @@
 // video player, decodes every frame with Downlink.shader, and logs what the
 // world actually received.
 //
-// Every frame a one-texel readback of the decoded texture's metadata gives
-// the frame number ("down N meta frame=F flip=B"). Meanwhile whole decoded
+// Every Udon frame a one-texel readback of the decoded texture's metadata
+// gives the frame number ("down N meta frame=F flip=B uf=U", U Udon's frame
+// count). Several are in flight at once: each copies the texture when it is
+// issued, so waiting for one would sample only every other frame. Meanwhile whole decoded
 // textures are read back one at a time and their error flags summed a slice
 // per frame, so Udon never stalls ("down N frame=F errors=E blocks=S").
 // Logged as "[ModemProbe] <utc time> <object name> ..." like ModemProbe.
@@ -20,7 +22,11 @@ using VRC.Udon.Common.Interfaces;
 public class DownProbe : UdonSharpBehaviour
 {
     public BaseVRCVideoPlayer player;
-    public RenderTexture video;        // the player's target
+    public RenderTexture video;        // the Unity player's target
+    // AVPro draws into a screen's material instead: when set, the decoded
+    // source is that material's texture, fetched every frame.
+    public Material screenMaterial;
+    public string screenProperty = "_MainTex";
     public Material decode;            // vrmodem/Downlink
     public RenderTexture[] decoded;    // per config: cols x (rows + 1), ARGBFloat
     public VRCUrl[] urls;
@@ -29,9 +35,11 @@ public class DownProbe : UdonSharpBehaviour
     // URL loads are rate-limited; leave room between configs.
     public float gap = 6f;
     public int texelsPerFrame = 6000;
+    public int metaInFlight = 6;
 
     private int _config = -1;
-    private bool _playing, _metaPending, _bulkPending, _summing;
+    private bool _playing, _bulkPending, _summing;
+    private int _metaPending;
     private float[] _meta = new float[4];
     private float[] _bulk = new float[0];
     private int _sumAt, _sumEnd, _errors, _bulkFrame, _lastMeta = -2;
@@ -91,12 +99,18 @@ public class DownProbe : UdonSharpBehaviour
         if (_summing) Sum();
         if (!_playing) return;
         RenderTexture target = decoded[_config];
-        VRCGraphics.Blit(video, target, decode, 0);
+        Texture source = video;
+        if (screenMaterial != null)
+        {
+            source = screenMaterial.GetTexture(screenProperty);
+            if (source == null) return;
+        }
+        VRCGraphics.Blit(source, target, decode, 0);
         // The metadata texel is the top-left of the picture: the texture's last row.
-        if (!_metaPending)
+        if (_metaPending < metaInFlight)
         {
             VRCAsyncGPUReadback.Request(target, 0, 0, 1, target.height - 1, 1, 0, 1, (IUdonEventReceiver)this);
-            _metaPending = true;
+            _metaPending++;
         }
         if (!_bulkPending && !_summing)
         {
@@ -109,12 +123,12 @@ public class DownProbe : UdonSharpBehaviour
     {
         if (request.width == 1 && request.height == 1)
         {
-            _metaPending = false;
+            _metaPending--;
             if (request.hasError || !request.TryGetData(_meta, 0) || _meta[1] < 0.5f) return;
             int frame = (int)_meta[0];
             if (frame == _lastMeta) return;
             _lastMeta = frame;
-            Log("down " + _config + " meta frame=" + frame + " flip=" + (_meta[2] > 0.5f ? 1 : 0));
+            Log("down " + _config + " meta frame=" + frame + " flip=" + (_meta[2] > 0.5f ? 1 : 0) + " uf=" + Time.frameCount);
             return;
         }
         _bulkPending = false;
