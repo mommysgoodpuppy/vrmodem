@@ -25,6 +25,8 @@ public class ModemProbe : UdonSharpBehaviour
     [Header("Seek pattern")]
     public float[] seekTargets = { 10f, 60f, 20f, 100f, 5f, 75f, 40f, 115f };
     public float seekInterval = 1f;
+    // Zero preserves ordinary media seeks; virtual media targets frame centers.
+    public int seekFps;
 
     [Header("Pause pattern")]
     public float pauseInterval = 1f;
@@ -80,7 +82,13 @@ public class ModemProbe : UdonSharpBehaviour
             return;
         }
         float t = Mathf.Clamp(seekTargets[_step], 0f, Mathf.Max(0f, player.GetDuration() - 0.1f));
-        Log("seek " + t.ToString("F3") + " from " + State());
+        int frame = -1;
+        if (seekFps > 0)
+        {
+            frame = Mathf.FloorToInt(t * seekFps);
+            t = (frame + 0.5f) / seekFps;
+        }
+        Log("seek " + t.ToString("F6") + (frame >= 0 ? " frame=" + frame : "") + " from " + State());
         player.SetTime(t);
         _step++;
         SendCustomEventDelayedSeconds(nameof(_SeekStep), seekInterval);

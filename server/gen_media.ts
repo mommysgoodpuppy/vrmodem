@@ -10,6 +10,8 @@
 //   probe-intra.mp4  every frame a keyframe: seek target maps to a unique byte range
 //   probe-gop1s.mp4  keyframe every second: shows how seeks snap to keyframes
 //   hls/index.m3u8   VOD HLS, 1 s segments (from the 1 s GOP encode)
+//   frame-64.mp4     one 64x64 gray intra frame: the sample the server repeats
+//                    to synthesize virtual MP4s (see virtual_mp4.ts)
 
 import { parseArgs } from "jsr:@std/cli@1/parse-args";
 
@@ -64,7 +66,20 @@ await ffmpeg("hls/index.m3u8", [
   "-hls_segment_filename", `${media}hls/seg%05d.ts`, `${media}hls/index.m3u8`,
 ]);
 
-for (const f of ["probe-intra.mp4", "probe-gop1s.mp4"]) {
+console.log("generating frame-64.mp4");
+{
+  const { code } = await new Deno.Command("ffmpeg", {
+    args: [
+      "-hide_banner", "-loglevel", "error", "-y",
+      "-f", "lavfi", "-i", "color=c=gray:s=64x64:r=60",
+      "-frames:v", "1", "-c:v", "libx264", "-profile:v", "baseline", "-pix_fmt", "yuv420p",
+      "-x264-params", "keyint=1:scenecut=0", `${media}frame-64.mp4`,
+    ],
+  }).output();
+  if (code !== 0) throw new Error("ffmpeg failed for frame-64.mp4");
+}
+
+for (const f of ["probe-intra.mp4", "probe-gop1s.mp4", "frame-64.mp4"]) {
   const { size } = await Deno.stat(`${media}${f}`);
-  console.log(`${f}: ${(size / 1024 / 1024).toFixed(1)} MiB`);
+  console.log(`${f}: ${size < 1e5 ? `${size} B` : `${(size / 1024 / 1024).toFixed(1)} MiB`}`);
 }

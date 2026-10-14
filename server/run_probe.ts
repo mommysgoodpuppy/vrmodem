@@ -22,7 +22,7 @@ const UNITY = `${HOME}/Unity/Hub/Editor/2022.3.22f1/Editor/Unity`;
 const VRC_LOGS =
   `${HOME}/.local/share/Steam/steamapps/compatdata/438100/pfx/drive_c/users/steamuser/AppData/LocalLow/VRChat/VRChat`;
 const PROBES = ["Probe AVPro", "Probe Unity"];
-const url = args.url ?? "http://127.0.0.1:8787/s/probe/probe-intra.mp4";
+const url = args.url ?? "http://127.0.0.1:8787/v/{session}/probe.mp4?fps=60&seconds=3600&lead=30&pace=1";
 const timeoutMs = Number(args.timeout ?? 300) * 1000;
 
 const runDir = join(REPO, "logs", `run-${new Date().toISOString().replaceAll(":", "-").slice(0, 19)}`);
@@ -35,7 +35,7 @@ async function run(cmd: string, cmdArgs: string[], env: Record<string, string> =
 }
 
 async function isRunning(pattern: string) {
-  return (await run("pgrep", ["-f", pattern])).code === 0;
+  return (await run("pgrep", ["-x", pattern])).code === 0;
 }
 
 // --- 1. export ---

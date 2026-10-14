@@ -11,6 +11,7 @@
 //   ahead (needed for the pause / consumption-rate channel).
 
 import { extname, join, normalize } from "jsr:@std/path@1";
+import { VirtualMp4 } from "./virtual_mp4.ts";
 
 const HOST = Deno.env.get("HOST") ?? "127.0.0.1";
 const PORT = Number(Deno.env.get("PORT") ?? 8787);
@@ -77,26 +78,50 @@ function index(): Response {
   const body = files.length
     ? files.sort().map((f) => base + f).join("\n")
     : "no media yet: run `deno task gen`";
-  return new Response(body + "\n", { headers: { "content-type": "text/plain" } });
+  return new Response(body + "\n" + base.replace("/s/", "/v/") + "probe.mp4?fps=60&seconds=3600&lead=30&pace=1\n", { headers: { "content-type": "text/plain" } });
 }
 
-async function serveFile(req: Request, id: number, session: string, rel: string, kbps: number) {
+let sourceFrame: Uint8Array | undefined;
+
+async function serveFile(req: Request, id: number, session: string, rel: string, kbps: number, url?: URL) {
+  let virtual: VirtualMp4 | undefined;
+  let lead = 0, pace = 0;
+  if (url) {
+    const fps = Number(url.searchParams.get("fps") ?? 60);
+    const seconds = Number(url.searchParams.get("seconds") ?? 3600);
+    lead = Number(url.searchParams.get("lead") ?? 30);
+    pace = Number(url.searchParams.get("pace") ?? 1);
+    if (!Number.isSafeInteger(lead) || lead < 0 || !Number.isFinite(pace) || pace < 0) {
+      log({ ev: "res", id, status: 400, session });
+      return new Response("lead must be a nonnegative integer; pace must be finite and nonnegative", { status: 400 });
+    }
+    try {
+      sourceFrame ??= await Deno.readFile(join(MEDIA_DIR, "frame-64.mp4"));
+      virtual = new VirtualMp4(sourceFrame, fps, seconds);
+    } catch (e) {
+      const status = e instanceof RangeError ? 400 : 503;
+      log({ ev: "res", id, status, session });
+      return new Response(status === 400 ? String(e) : "virtual source unavailable: run deno task gen", { status });
+    }
+  }
   const path = normalize(join(MEDIA_DIR, rel));
   if (!path.startsWith(MEDIA_DIR)) return new Response("bad path", { status: 400 });
 
-  let stat: Deno.FileInfo;
-  try {
-    stat = await Deno.stat(path);
-    if (!stat.isFile) throw new Error();
-  } catch {
-    log({ ev: "res", id, status: 404 });
-    return new Response("not found", { status: 404 });
+  let size: number;
+  if (virtual) size = virtual.size;
+  else {
+    try {
+      const stat = await Deno.stat(path);
+      if (!stat.isFile) throw new Error();
+      size = stat.size;
+    } catch {
+      log({ ev: "res", id, status: 404 });
+      return new Response("not found", { status: 404 });
+    }
   }
-
-  const size = stat.size;
   const range = parseRange(req.headers.get("range"), size);
   const headers = new Headers({
-    "content-type": CONTENT_TYPES[extname(path)] ?? "application/octet-stream",
+    "content-type": virtual ? "video/mp4" : CONTENT_TYPES[extname(path)] ?? "application/octet-stream",
     "accept-ranges": "bytes",
     "cache-control": "no-store",
   });
@@ -114,19 +139,27 @@ async function serveFile(req: Request, id: number, session: string, rel: string,
   const status = range ? 206 : 200;
   headers.set("content-length", String(length));
   if (range) headers.set("content-range", `bytes ${start}-${end}/${size}`);
-  log({ ev: "res", id, status, session, start, end, size, kbps });
+  log({ ev: "res", id, status, session, start, end, size, kbps, ...(virtual ? { frame: virtual.frameAt(start), fps: virtual.fps, frames: virtual.frames, lead, pace } : {}) });
 
   if (req.method === "HEAD") return new Response(null, { status, headers });
 
-  const file = await Deno.open(path);
-  await file.seek(start, Deno.SeekMode.Start);
+  const file = virtual ? undefined : await Deno.open(path);
+  await file?.seek(start, Deno.SeekMode.Start);
   const t0 = now();
   let sent = 0;
   let closed = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let wake: (() => void) | undefined;
+  const waitFor = (ms: number) => new Promise<void>((resolve) => {
+    wake = resolve;
+    timer = setTimeout(() => { timer = undefined; wake = undefined; resolve(); }, ms);
+  });
   const finish = (ev: "done" | "abort") => {
     if (closed) return;
     closed = true;
-    file.close();
+    if (timer !== undefined) clearTimeout(timer);
+    wake?.();
+    file?.close();
     const ms = now() - t0;
     log({ ev, id, sent, ms });
     console.log(`${stamp()} #${id} ${ev} ${(sent / 1024).toFixed(0)} KiB in ${(ms / 1000).toFixed(2)} s`);
@@ -141,13 +174,39 @@ async function serveFile(req: Request, id: number, session: string, rel: string,
         finish("done");
         return;
       }
-      if (kbps > 0) {
-        const due = t0 + (sent * 8) / kbps; // ms at which `sent` bytes are allowed
-        const wait = due - now();
-        if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      if (closed) return;
+      let chunk = Math.min(CHUNK, length - sent);
+      if (virtual) {
+        const position = start + sent;
+        const mediaStart = Math.max(start, virtual.header.length);
+        const leadEnd = mediaStart + Math.min(lead, virtual.frames) * virtual.sample.length;
+        if (position < virtual.header.length) chunk = Math.min(chunk, virtual.header.length - position);
+        else if (pace > 0) {
+          // Do not let a 16 KiB chunk turn a half-second lead into seconds
+          // of unintended read-ahead. After the lead, send one frame at a time.
+          if (position < leadEnd) chunk = Math.min(chunk, leadEnd - position);
+          else {
+            const due = t0 + ((position - leadEnd) / virtual.sample.length + 1) * 1000 / (virtual.fps * pace);
+            while (!closed && due > now()) await waitFor(Math.min(60_000, due - now()));
+            chunk = Math.min(chunk, virtual.sample.length);
+          }
+        }
+      } else if (kbps > 0) {
+        const due = t0 + (sent * 8) / kbps;
+        while (!closed && due > now()) await waitFor(Math.min(60_000, due - now()));
       }
-      const buf = new Uint8Array(Math.min(CHUNK, length - sent));
-      const n = await file.read(buf);
+      if (closed) return;
+      const buf = virtual ? virtual.read(start + sent, chunk) : new Uint8Array(chunk);
+      let n: number | null;
+      try {
+        n = virtual ? buf.length : await file!.read(buf);
+      } catch (e) {
+        if (closed) return;
+        finish("abort");
+        ctrl.error(e);
+        return;
+      }
+      if (closed) return;
       if (n === null) {
         ctrl.close();
         finish("done");
@@ -191,6 +250,8 @@ Deno.serve({ hostname: HOST, port: PORT, onListen: () => {
   }
   if (url.pathname === "/") return index();
 
+  const v = url.pathname.match(/^\/v\/([^/]+)\/([^/]+\.mp4)$/);
+  if (v) return serveFile(req, id, v[1], v[2], 0, url);
   const m = url.pathname.match(/^\/s\/([^/]+)\/(.+)$/);
   if (!m) {
     log({ ev: "res", id, status: 404 });

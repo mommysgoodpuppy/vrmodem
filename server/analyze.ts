@@ -19,15 +19,15 @@ const server = (await Deno.readTextFile(join(dir, "server.jsonl"))).trim().split
 if (!server.length) throw new Error("empty server log");
 const day = new Date(server[0].t).toISOString().slice(0, 10);
 
-const reqs = new Map<number, { remote: string; path: string }>();
+const reqs = new Map<number, { t: number; remote: string; path: string; method: string; headers: Record<string, string> }>();
 const buckets = new Map<string, number>(); // `${bucketStart}:${id}` -> bytes
 for (const e of server) {
   if (e.ev === "req") {
-    reqs.set(e.id, { remote: e.remote, path: e.path });
+    reqs.set(e.id, e);
     const ua = e.headers["user-agent"] ?? "-";
     events.push({ t: e.t, text: `srv #${e.id} ${e.remote} ${e.method} ${e.path} range=${e.headers.range ?? "-"} ua=${ua}` });
   } else if (e.ev === "res") {
-    events.push({ t: e.t, text: `srv #${e.id} ${e.status} ${e.start ?? ""}-${e.end ?? ""}/${e.size ?? ""}` });
+    events.push({ t: e.t, text: `srv #${e.id} ${e.status} ${e.start ?? ""}-${e.end ?? ""}/${e.size ?? ""}${"frame" in e ? ` session=${e.session} frame=${e.frame ?? "header"}` : ""}` });
   } else if (e.ev === "done" || e.ev === "abort") {
     events.push({ t: e.t, text: `srv #${e.id} ${e.ev} sent=${e.sent} in ${(e.ms / 1000).toFixed(2)} s` });
   } else if (e.ev === "pull") {
@@ -41,12 +41,44 @@ for (const [k, bytes] of buckets) {
 }
 
 // --- probe (VRChat log) ---
+const sessions = new Map<string, string>();
+const seeks: { t: number; player: string; frame: number; session: string }[] = [];
 const probeRe = /\[ModemProbe\] (\d\d:\d\d:\d\d\.\d{3}) (Probe \w+) (.*)$/;
 for (const line of (await Deno.readTextFile(join(dir, "vrchat-probe.log"))).split("\n")) {
   const m = line.match(probeRe);
   if (!m) continue;
-  events.push({ t: Date.parse(`${day}T${m[1]}Z`), text: `${m[2].padEnd(11)} ${m[3]}` });
+  const t = Date.parse(`${day}T${m[1]}Z`);
+  events.push({ t, text: `${m[2].padEnd(11)} ${m[3]}` });
+  if (m[3].startsWith("load ")) {
+    const path = new URL(m[3].slice(5)).pathname;
+    const session = path.match(/^\/[sv]\/([^/]+)\//)?.[1];
+    if (session) sessions.set(m[2], session);
+  }
+  const frame = m[3].match(/^seek .* frame=(\d+)/);
+  const session = sessions.get(m[2]);
+  if (frame && session) seeks.push({ t, player: m[2], frame: Number(frame[1]), session });
 }
+
+// Match the first player range request after each seek, before the next
+// seek (or five seconds). Chrome URL checks and HEADs are not seek evidence.
+let passed = 0;
+for (let i = 0; i < seeks.length; i++) {
+  const seek = seeks[i];
+  const next = seeks.slice(i + 1).find((s) => s.player === seek.player);
+  const deadline = Math.min(next?.t ?? Infinity, seek.t + 5000);
+  const response = server.find((e) => {
+    const req = reqs.get(e.id);
+    return e.ev === "res" && e.status === 206 && e.session === seek.session &&
+      typeof e.frame === "number" && req?.method === "GET" && req.headers.range &&
+      !/Chrome/i.test(req.headers["user-agent"] ?? "") && req.t >= seek.t && req.t < deadline;
+  });
+  const req = response && reqs.get(response.id)!;
+  const ok = response?.frame === seek.frame;
+  if (ok) passed++;
+  events.push({ t: seek.t, text: `${seek.player} seek grade=${ok ? "PASS" : response ? "MISMATCH" : "NO REQUEST"} expected=${seek.frame}` +
+    (response ? ` actual=${response.frame} latency=${(req.t - seek.t).toFixed(1)} ms #${response.id}` : "") });
+}
+if (seeks.length) console.log(`Virtual seeks: ${passed}/${seeks.length} matched`);
 
 events.sort((a, b) => a.t - b.t);
 const t0 = events[0].t;

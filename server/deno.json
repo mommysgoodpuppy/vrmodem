@@ -1,5 +1,6 @@
 {
   "tasks": {
+    "test": "deno test -A *_test.ts",
     "serve": "deno run --allow-net --allow-env --allow-read=../media,../logs --allow-write=../logs main.ts",
     "gen": "deno run --allow-run=ffmpeg --allow-read=../media --allow-write=../media gen_media.ts",
     "probe": "deno run -A run_probe.ts",

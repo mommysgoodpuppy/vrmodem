@@ -27,7 +27,7 @@ public static class ProbeSceneBuilder
     const string ProgramPath = "Assets/vrmodem/ModemProbe.asset";
     const string TexturePath = "Assets/vrmodem/ProbeVideo.renderTexture";
     const string WorldPrefab = "Packages/com.vrchat.worlds/Samples/UdonExampleScene/Prefabs/VRCWorld.prefab";
-    const string DefaultUrl = "http://127.0.0.1:8787/s/probe/probe-intra.mp4";
+    const string DefaultUrl = "http://127.0.0.1:8787/v/{session}/probe.mp4?fps=60&seconds=3600&lead=30&pace=1";
 
     [MenuItem("vrmodem/Build Probe Scene")]
     public static void Build()
@@ -58,7 +58,7 @@ public static class ProbeSceneBuilder
         GameObject.CreatePrimitive(PrimitiveType.Plane).name = "Floor";
 
         var avpro = new GameObject("Probe AVPro");
-        AddProbe(avpro, avpro.AddComponent<VRCAVProVideoPlayer>(), url, 0f);
+        AddProbe(avpro, avpro.AddComponent<VRCAVProVideoPlayer>(), PlayerUrl(url, "avpro"), 0f);
 
         // Unity player renders into a RenderTexture: no screen needed, and it
         // is the readback source for downlink experiments later.
@@ -68,11 +68,25 @@ public static class ProbeSceneBuilder
         so.FindProperty("renderMode").intValue = 0; // RenderTexture
         so.FindProperty("targetTexture").objectReferenceValue = EnsureRenderTexture();
         so.ApplyModifiedPropertiesWithoutUndo();
-        AddProbe(unity, unityPlayer, url, 8f);
+        AddProbe(unity, unityPlayer, PlayerUrl(url, "unity"), 8f);
 
         System.IO.Directory.CreateDirectory("Assets/Scenes");
         EditorSceneManager.SaveScene(scene, ScenePath);
         Debug.Log("[ProbeSceneBuilder] saved " + ScenePath + " url=" + url);
+    }
+
+    // Substitute at build time; each player gets its own baked session URL.
+    static string PlayerUrl(string url, string session)
+    {
+        if (url.Contains("{session}")) return url.Replace("{session}", session);
+        var uri = new System.UriBuilder(url);
+        var parts = uri.Path.Split('/');
+        if (parts.Length >= 4 && (parts[1] == "v" || parts[1] == "s"))
+        {
+            parts[2] = session;
+            uri.Path = string.Join("/", parts);
+        }
+        return uri.Uri.AbsoluteUri;
     }
 
     static void AddProbe(GameObject go, BaseVRCVideoPlayer player, string url, float startDelay)
@@ -81,6 +95,18 @@ public static class ProbeSceneBuilder
         probe.player = player;
         probe.url = new VRCUrl(url);
         probe.startDelay = startDelay;
+        var uri = new System.Uri(url);
+        if (uri.AbsolutePath.StartsWith("/v/"))
+        {
+            int fps = 60;
+            foreach (var param in uri.Query.TrimStart('?').Split('&'))
+                if (param.StartsWith("fps=")) fps = int.Parse(param.Substring(4));
+            probe.seekFps = fps;
+        }
+        // AVPro's runtime Loop setter does not persist its serialized value.
+        var playerSettings = new SerializedObject(player);
+        playerSettings.FindProperty("loop").boolValue = false;
+        playerSettings.ApplyModifiedPropertiesWithoutUndo();
         UdonSharpEditorUtility.CopyProxyToUdon(probe);
     }
 
