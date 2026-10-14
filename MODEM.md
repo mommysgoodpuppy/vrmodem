@@ -90,3 +90,14 @@ left; at 1280×720 with 8 px blocks, 3,520 bytes a frame.
 ffmpeg decoding the downlink as the shader does. On loopback, a ping to
 1.1.1.1 takes 430–450 ms (28 ms direct), and a DNS query through the gateway's
 address resolves in 630 ms.
+
+In VRChat (`deno task probe --modem 8`, loopback, 14 October 2026), the
+world's `ModemPing`:
+- connected 0.6 s after its first lane was ready;
+- had 20 of 20 pings to 1.1.1.1 answered, mean 1,181 ms, max 1,368 ms;
+- resolved example.com through the gateway in 1,152 ms.
+
+No chunk was resent and no frame was bad. About half of the ping time is the
+uplink: a packet goes whole on one lane, and a ping's 33 chunks take 0.55 s
+at 60 seeks a second. The other half is the downlink player's 0.5 s buffer.
+

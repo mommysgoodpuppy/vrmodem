@@ -45,6 +45,7 @@ function simulate(o: Opts) {
   const upGot: Uint8Array[] = [], downGot: Uint8Array[] = [];
   const session = new ModemSession(o.lanes, (ip) => upGot.push(ip));
   const client = new ModemClient(o.lanes, 0x1234, 0x0a000001);
+  for (let i = 0; i < o.lanes; i++) client.laneReady(i);
   const upSent: Uint8Array[] = [], downSent: Uint8Array[] = [];
   const inFlight: { at: number; run: () => void }[] = [];
   const later = (at: number, run: () => void) => inFlight.push({ at, run });

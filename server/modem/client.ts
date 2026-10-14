@@ -4,7 +4,8 @@
 import { decodeDown, DownRx, LaneTx, MTU, Type, u24 } from "./link.ts";
 
 export class ModemClient {
-  readonly lanes: LaneTx[];
+  lanes: LaneTx[];
+  readonly ready: boolean[];
   readonly down = new DownRx();
   private acked = -1;
   private ackAt = -Infinity;
@@ -12,30 +13,40 @@ export class ModemClient {
 
   constructor(lanes: number, readonly nonce: number, readonly address: number, readonly ackEvery = 100) {
     this.lanes = Array.from({ length: lanes }, () => new LaneTx());
-    const hello = new Uint8Array(8);
-    new DataView(hello.buffer).setUint32(0, nonce >>> 0, true);
-    new DataView(hello.buffer).setUint32(4, address >>> 0, true);
-    for (const lane of this.lanes) lane.write(Type.Hello, hello);
+    this.ready = this.lanes.map(() => false);
   }
 
-  // An IP packet to send: on the least loaded lane.
+  // Lane i's player is ready: its sequence starts again, with a hello.
+  laneReady(i: number) {
+    this.lanes[i] = new LaneTx();
+    this.ready[i] = true;
+    const hello = new Uint8Array(8);
+    new DataView(hello.buffer).setUint32(0, this.nonce >>> 0, true);
+    new DataView(hello.buffer).setUint32(4, this.address >>> 0, true);
+    this.lanes[i].write(Type.Hello, hello);
+  }
+
+  // An IP packet to send: on the least loaded ready lane.
   send(ip: Uint8Array) {
-    if (ip.length < 20 || ip.length > MTU) return;
-    this.least().write(Type.Ip, ip);
+    if (ip.length < 20 || ip.length > MTU) return false;
+    const lane = this.least();
+    lane?.write(Type.Ip, ip);
+    return !!lane;
   }
 
   private least() {
-    return this.lanes.reduce((a, b) => (b.load < a.load ? b : a));
+    return this.lanes.filter((_, i) => this.ready[i]).reduce<LaneTx | undefined>((a, b) => (!a || b.load < a.load ? b : a), undefined);
   }
 
   // Each lane's seek for this frame (null: none).
   poll(now: number): (number | null)[] {
-    if (this.down.ack !== this.acked && now - this.ackAt >= this.ackEvery) {
+    const lane = this.least();
+    if (lane && this.down.ack !== this.acked && now - this.ackAt >= this.ackEvery) {
       this.acked = this.down.ack;
       this.ackAt = now;
-      this.least().write(Type.Dack, u24(this.acked));
+      lane.write(Type.Dack, u24(this.acked));
     }
-    return this.lanes.map((l) => l.poll(now));
+    return this.lanes.map((l, i) => (this.ready[i] ? l.poll(now) : null));
   }
 
   // A downlink frame's bytes: the packets it brought that are new.
@@ -46,7 +57,7 @@ export class ModemClient {
       return [];
     }
     if (f.nonce !== (this.nonce >>> 0)) return []; // the gateway has not heard our hello yet
-    f.acks.forEach((a, i) => this.lanes[i].ack(a, now));
+    f.acks.forEach((a, i) => this.ready[i] && this.lanes[i].ack(a, now));
     return this.down.frame(f);
   }
 }

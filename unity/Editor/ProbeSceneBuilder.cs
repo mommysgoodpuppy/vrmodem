@@ -11,6 +11,8 @@
 // VRMODEM_DOWN ("url|w|h|block|levels|seed;...") builds the downlink scene
 // instead: one Unity player and a DownProbe that decodes each test video.
 // VRMODEM_DOWN_PLAYER=avpro uses an AVPro player drawing into a screen material.
+// VRMODEM_MODEM ("gatewayUrl|session|lanes") builds the modem scene instead
+// (MODEM.md): a Unity downlink player, AVPro lanes, and ModemPing.
 //
 // Menu: vrmodem > Build Probe Scene
 // Batch: Unity -batchmode -quit -projectPath <proj> -executeMethod ProbeSceneBuilder.Build
@@ -34,6 +36,7 @@ public static class ProbeSceneBuilder
     const string TexturePath = "Assets/vrmodem/ProbeVideo.renderTexture";
     const string DownScriptPath = "Assets/vrmodem/DownProbe.cs";
     const string DownProgramPath = "Assets/vrmodem/DownProbe.asset";
+    static readonly string[] ModemScripts = { "Modem", "ModemLane", "ModemPing" };
     // Project-only assets, outside the repository's symlinked folder.
     const string GeneratedDir = "Assets/Generated";
     const string WorldPrefab = "Packages/com.vrchat.worlds/Samples/UdonExampleScene/Prefabs/VRCWorld.prefab";
@@ -59,6 +62,7 @@ public static class ProbeSceneBuilder
     {
         EnsureProgram(ScriptPath, ProgramPath);
         EnsureProgram(DownScriptPath, DownProgramPath);
+        foreach (var name in ModemScripts) EnsureProgram("Assets/vrmodem/" + name + ".cs", "Assets/vrmodem/" + name + ".asset");
         UdonSharpCompilerV1.CompileSync(new UdonSharpCompileOptions());
         var url = System.Environment.GetEnvironmentVariable("VRMODEM_URL");
         if (string.IsNullOrEmpty(url)) url = DefaultUrl;
@@ -75,7 +79,9 @@ public static class ProbeSceneBuilder
         // uplink lanes, with URL loads staggered for the rate limit.
         var down = System.Environment.GetEnvironmentVariable("VRMODEM_DOWN");
         int lanes;
-        if (!string.IsNullOrEmpty(down)) AddDownProbe(down);
+        var modem = System.Environment.GetEnvironmentVariable("VRMODEM_MODEM");
+        if (!string.IsNullOrEmpty(modem)) AddModem(modem);
+        else if (!string.IsNullOrEmpty(down)) AddDownProbe(down);
         else if (int.TryParse(System.Environment.GetEnvironmentVariable("VRMODEM_LANES"), out lanes) && lanes > 0)
         {
             for (int i = 0; i < lanes; i++)
@@ -275,6 +281,68 @@ public static class ProbeSceneBuilder
         UdonSharpEditorUtility.CopyProxyToUdon(probe);
         AssetDatabase.SaveAssets();
         Debug.Log("[ProbeSceneBuilder] down probe (" + (avpro ? "AVPro" : "Unity") + ") with " + n + " videos " + w + "x" + h);
+    }
+
+    static void AddModem(string spec)
+    {
+        var f = spec.Split('|');
+        string gateway = f[0].TrimEnd('/'), session = f[1];
+        int lanes = int.Parse(f[2]);
+        const int w = 1280, h = 720, block = 8;
+        int bytes = (w / block) * ((h - 16) / block) / 4;
+
+        var video = GeneratedTexture("ModemVideo", w, h, RenderTextureFormat.ARGB32, false);
+        // ModemPack.shader's target: the frame number, then four bytes a texel.
+        var packed = GeneratedTexture("ModemPacked", 1 + bytes / 4, 1, RenderTextureFormat.ARGB32, true);
+        var matPath = GeneratedDir + "/ModemPack.mat";
+        var mat = AssetDatabase.LoadAssetAtPath<Material>(matPath);
+        if (mat == null)
+        {
+            mat = new Material(Shader.Find("vrmodem/ModemPack"));
+            AssetDatabase.CreateAsset(mat, matPath);
+        }
+        mat.SetInt("_Block", block);
+        mat.SetInt("_Levels", 4);
+        EditorUtility.SetDirty(mat);
+
+        var go = new GameObject("Modem");
+        var player = go.AddComponent<VRCUnityVideoPlayer>();
+        var so = new SerializedObject(player);
+        so.FindProperty("renderMode").intValue = 0; // RenderTexture
+        so.FindProperty("targetTexture").objectReferenceValue = video;
+        so.FindProperty("loop").boolValue = false;
+        so.ApplyModifiedPropertiesWithoutUndo();
+
+        var laneBehaviours = new ModemLane[lanes];
+        for (int i = 0; i < lanes; i++)
+        {
+            var lane = new GameObject("Modem Lane " + i);
+            var lanePlayer = lane.AddComponent<VRCAVProVideoPlayer>();
+            var ls = new SerializedObject(lanePlayer);
+            ls.FindProperty("loop").boolValue = false;
+            ls.ApplyModifiedPropertiesWithoutUndo();
+            var b = UdonSharpUndo.AddComponent<ModemLane>(lane);
+            b.player = lanePlayer;
+            b.url = new VRCUrl(gateway + "/m/" + session + "/u" + i + ".mp4");
+            UdonSharpEditorUtility.CopyProxyToUdon(b);
+            laneBehaviours[i] = b;
+        }
+
+        var m = UdonSharpUndo.AddComponent<Modem>(go);
+        m.downPlayer = player;
+        m.downUrl = new VRCUrl(gateway + "/m/" + session + "/down.mp4?w=" + w + "&h=" + h + "&block=" + block + "&qp=36");
+        m.downVideo = video;
+        m.pack = mat;
+        m.packed = packed;
+        m.lanes = laneBehaviours;
+        UdonSharpEditorUtility.CopyProxyToUdon(m);
+
+        var pingGo = new GameObject("Modem Ping");
+        var ping = UdonSharpUndo.AddComponent<ModemPing>(pingGo);
+        ping.modem = m;
+        UdonSharpEditorUtility.CopyProxyToUdon(ping);
+        AssetDatabase.SaveAssets();
+        Debug.Log("[ProbeSceneBuilder] modem with " + lanes + " lanes at " + gateway + " session " + session);
     }
 
     static RenderTexture EnsureRenderTexture()

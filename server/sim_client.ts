@@ -43,6 +43,7 @@ async function request(i: number, frame: number | null) {
   }
 }
 await Promise.all(Array.from({ length: lanes }, (_, i) => request(i, null)));
+for (let i = 0; i < lanes; i++) client.laneReady(i);
 
 // The downlink: the stream through ffmpeg into gray frames.
 const down = await fetch(`${base}/m/${session}/down.mp4?w=${layout.w}&h=${layout.h}&block=${layout.block}`);

@@ -46,6 +46,8 @@ Live streams generated at send time arrive whole, at about 0.5 s latency. See
 | `server/sim_client.ts` | A stand-in world against a running gateway: ping and DNS through it (`deno task sim`) |
 | `server/delay_proxy.ts` | Userspace TCP proxy that emulates WAN RTT, handshake cancellation included (`deno task delay`); with `--rtt 0`, a plain relay |
 | `unity/DownProbe.cs` | UdonSharp downlink probe: plays each test video, decodes it with `Downlink.shader`, reads back metadata and errors |
+| `unity/Modem.cs`, `ModemLane.cs`, `ModemPack.shader` | The modem's world half: lanes, downlink readback as bytes, both ARQs |
+| `unity/ModemPing.cs` | In-world modem test: pings and a DNS query (`deno task probe --modem`) |
 | `unity/ModemProbe.cs` | UdonSharp probe: automatic load, seek and pause patterns, position sampling |
 | `unity/Editor/ProbeSceneBuilder.cs` | Generates the probe scene, headless or from the editor menu |
 | `unity/Editor/WorldExport.cs` | Headless local-test world export through the SDK's `VRCWorldBuilder` |
@@ -325,6 +327,7 @@ modem is therefore about 0.6 s plus the uplink.
 | 11-33 to 11-40 | 1080p and 4K, both players | 15.4 Mbit/s error-free at 4K; 61 Mbit/s raw at 0.42% |
 | 11-54 | Live padded-intra streams, 720p | Every frame at 60 fps, 0 errors, 6.76 Mbit/s at 4 px; 0.53 s latency |
 | 11-57 | Live, lead 0 / 4 / 10 frames | Latency unchanged (0.52 s): the player buffers |
+| 12-19 | The modem in the world, 8 lanes | 20/20 pings to 1.1.1.1 at 1.18 s; DNS through the gateway |
 
 ## Open questions
 

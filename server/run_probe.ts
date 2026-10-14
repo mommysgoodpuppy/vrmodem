@@ -9,7 +9,11 @@
 //   deno task probe [--no-build] [--url URL] [--matrix "URL URL ..."] [--rtt MS] [--lanes N] [--listen HOST:PORT]
 //                   [--intervals 0.1,0,-2] [--seeks 400] [--timeout 300] [--vr]
 //                   [--down [NAME,NAME...]] [--down-player unity|avpro]
-//                   [--live "QUERY;QUERY..."]
+//                   [--live "QUERY;QUERY..."] [--modem [LANES]]
+//
+// --modem builds the modem world (MODEM.md) and runs the gateway on
+// 127.0.0.1:8789 beside the probe server: ModemPing pings 1.1.1.1 and resolves
+// a name through it.
 //
 // --live decodes live downlink streams instead (main.ts /l/), one per query,
 // e.g. --live "block=8&qp=36;block=4&qp=36&w=1920&h=1080". All must share a size.
@@ -28,7 +32,7 @@ import { join } from "jsr:@std/path@1";
 
 const args = parseArgs(Deno.args, {
   boolean: ["no-build", "vr"],
-  string: ["url", "matrix", "rtt", "lanes", "intervals", "seeks", "listen", "timeout", "down", "down-player", "live"],
+  string: ["url", "matrix", "rtt", "lanes", "intervals", "seeks", "listen", "timeout", "down", "down-player", "live", "modem"],
 });
 const HOME = Deno.env.get("HOME")!;
 const REPO = new URL("../", import.meta.url).pathname;
@@ -60,7 +64,10 @@ if (args.down !== undefined) {
     return [viaProxy(`${base}/l/down/live${i}.mp4?${q}`), get("w", 1280), get("h", 720), get("block", 8), get("levels", 4), get("seed", i + 1)].join("|");
   }).join(";");
 }
-const PROBES = downSpec ? ["Probe Down"]
+const GATEWAY = "127.0.0.1:8789";
+const modemLanes = args.modem === undefined ? 0 : Number(args.modem || 8);
+const modemSpec = modemLanes ? `http://${GATEWAY}|world|${modemLanes}` : "";
+const PROBES = modemSpec ? ["Modem Ping"] : downSpec ? ["Probe Down"]
   : lanes > 0 ? Array.from({ length: lanes }, (_, i) => `Probe AVPro${i}`) : ["Probe AVPro", "Probe Unity"];
 const timeoutMs = Number(args.timeout ?? 300) * 1000;
 
@@ -97,7 +104,7 @@ if (args["no-build"]) {
     "-logFile", join(runDir, "unity-export.log"),
   ], { VRMODEM_URL: url, VRMODEM_MATRIX: matrixUrls, VRMODEM_LANES: String(lanes),
     VRMODEM_INTERVALS: args.intervals ?? "", VRMODEM_SEEKS: args.seeks ?? "",
-    VRMODEM_DOWN: downSpec, VRMODEM_DOWN_PLAYER: args["down-player"] ?? "unity" });
+    VRMODEM_DOWN: downSpec, VRMODEM_DOWN_PLAYER: args["down-player"] ?? "unity", VRMODEM_MODEM: modemSpec });
   if (code !== 0) throw new Error(`export failed (exit ${code}), see ${runDir}/unity-export.log`);
   vrcw = (await Deno.readTextFile(resultFile)).trim();
 }
@@ -117,6 +124,13 @@ const server = new Deno.Command("deno", {
 }).spawn();
 const serverOut = await Deno.open(join(runDir, "server.txt"), { write: true, create: true, truncate: true });
 server.stdout.pipeTo(serverOut.writable);
+const gateway = !modemSpec ? null : new Deno.Command("deno", {
+  args: ["task", "gateway", "--listen", GATEWAY, "--lanes", String(modemLanes)],
+  cwd: join(REPO, "server"),
+  env: { LOG_PATH: join(runDir, "gateway.jsonl") },
+  stdout: "inherit",
+  stderr: "inherit",
+}).spawn();
 const proxy = args.rtt === undefined ? null : new Deno.Command("deno", {
   args: ["task", "delay", "--rtt", args.rtt],
   cwd: join(REPO, "server"),
@@ -179,9 +193,9 @@ while (Date.now() < deadline && done.size < PROBES.length) {
   const text = new TextDecoder().decode(data.subarray(offset));
   offset = data.length;
   for (const line of text.split("\n")) {
-    if (/\[ModemProbe\]|Video Playback|AVPro|untrusted|URL/i.test(line)) {
+    if (/\[ModemProbe\]|\[Modem\]|Video Playback|AVPro|untrusted|URL/i.test(line)) {
       probeLines.push(line.trimEnd());
-      if (line.includes("[ModemProbe]")) console.log(line.trim());
+      if (/\[ModemProbe\]|\[Modem\]/.test(line)) console.log(line.trim());
     }
     for (const p of PROBES) {
       if (line.includes(`${p} probe done`) || line.includes(`${p} event error`)) done.add(p);
@@ -195,6 +209,8 @@ server.kill("SIGTERM");
 await server.status;
 proxy?.kill("SIGTERM");
 await proxy?.status;
+gateway?.kill("SIGTERM");
+await gateway?.status;
 
 say(done.size === PROBES.length ? "all probes finished" : `timed out; finished: ${[...done].join(", ") || "none"}`);
 say(`results in ${runDir}`);
