@@ -62,8 +62,7 @@ HEAD and single byte ranges are supported. Virtual `res` log events include
 `session`, `frame` (null inside the header), `fps`, `frames`, `lead`, and `pace`.
 Each frame is an identical AVC intra sample with valid filler to reach 128 B
 (7.5 KiB/s at 60 fps). There is no audio track. ffmpeg decoding and duration
-are tested; WMF acceptance of 64×64 frames, repeated IDRs, and video without
-audio still needs a client run.
+are tested, and both players accept the file under WMF (run 08-54).
 
 `deno task test` checks the generated MP4 with ffprobe/ffmpeg and tests HTTP
 ranges, pacing, and cancellation. It requires those tools on PATH.
@@ -80,8 +79,9 @@ Each has a `ModemProbe` that runs automatically: load (staggered 8 s for the
 URL rate limit), play, sampling, seek pattern, pause pattern, stop. The URL is
 baked at build time. The default virtual URL substitutes `{session}` with
 `avpro` or `unity`; explicit `/s/` and `/v/` URLs also get per-player sessions.
-Virtual seeks use frame centers, `(frame + 0.5) / fps`, and log the expected
-frame. Looping is disabled.
+Virtual seeks aim frame N at `(N − 1 + phase) / fps`, because WMF requests
+`ceil(t × fps)`. The builder sweeps phases 0.05, 0.25, 0.5, 0.75, and 0.95.
+Each seek logs its expected frame and phase. Looping is disabled.
 
 ```sh
 VRMODEM_URL='http://127.0.0.1:8787/v/{session}/probe.mp4?fps=60&seconds=3600&lead=30&pace=1' \
@@ -115,6 +115,24 @@ Chrome preflights and HEAD requests are excluded from grading. The project
 must not be open in the editor at the same time.
 
 ## Findings
+
+### Runs 2026-10-14T09-01 and 09-05 (virtual MP4, sub-frame phase sweep)
+
+- **Seek quantization is `ceil(t × fps)`.** WMF requests the first sample
+  whose start time is at or after the seek time. Seeking at
+  `(N + phase) / fps` for phases 0.05–0.95 requested frame N+1 every time,
+  on both players (80/80). In the 08-54 run, frame-center seeks were all
+  +1 for the same reason.
+- **Aiming at `(N − 1 + phase) / fps` is exact.** 80/80 PASS at every phase
+  from 0.05 to 0.95, so at least 90% of each frame interval decodes
+  correctly; float32 `SetTime` jitter isn't a concern at 60 fps × 1 h. Each
+  seek therefore carries log2(216000) ≈ 17.7 bits.
+- **Latency** from the Udon `SetTime` log line to the server request: AVPro
+  2.3 ms mean (3.0 max), Unity 18.9 ms mean (21.5 max).
+- **Pauses are invisible at `pace=1`.** A paced 7.5 KiB/s stream never fills
+  the roughly 4.5 MiB read-ahead, so the client keeps pulling while paused,
+  and pause/play opens no new connection. The pause channel needs a stream
+  whose bitrate fills the buffer within about a second.
 
 ### Run 2026-10-14T08-54 (virtual MP4, 60 fps × 1 h, `lead=30&pace=1`)
 
@@ -166,7 +184,8 @@ server's JSONL. `deno task analyze` does this automatically.
 
 Answered so far: localhost works in a local test world. Under Proton both
 players use Media Foundation (`NSPlayer`/`WMFSDK`). Seeks inside the buffered
-range still produce a new request.
+range still produce a new request, for sample `ceil(t × fps)`, exactly, at
+1 Hz.
 
 Still open:
 

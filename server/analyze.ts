@@ -42,7 +42,7 @@ for (const [k, bytes] of buckets) {
 
 // --- probe (VRChat log) ---
 const sessions = new Map<string, string>();
-const seeks: { t: number; player: string; frame: number; session: string }[] = [];
+const seeks: { t: number; player: string; frame: number; phase: number | null; session: string }[] = [];
 const probeRe = /\[ModemProbe\] (\d\d:\d\d:\d\d\.\d{3}) (Probe \w+) (.*)$/;
 for (const line of (await Deno.readTextFile(join(dir, "vrchat-probe.log"))).split("\n")) {
   const m = line.match(probeRe);
@@ -54,14 +54,18 @@ for (const line of (await Deno.readTextFile(join(dir, "vrchat-probe.log"))).spli
     const session = path.match(/^\/[sv]\/([^/]+)\//)?.[1];
     if (session) sessions.set(m[2], session);
   }
-  const frame = m[3].match(/^seek .* frame=(\d+)/);
+  const frame = m[3].match(/^seek .* frame=(\d+)(?: phase=([\d.]+))?/);
   const session = sessions.get(m[2]);
-  if (frame && session) seeks.push({ t, player: m[2], frame: Number(frame[1]), session });
+  if (frame && session) {
+    seeks.push({ t, player: m[2], frame: Number(frame[1]), phase: frame[2] ? Number(frame[2]) : null, session });
+  }
 }
 
 // Match the first player range request after each seek, before the next
 // seek (or five seconds). Chrome URL checks and HEADs are not seek evidence.
 let passed = 0;
+// player -> phase -> (actual - expected, or "none") -> count
+const offsets = new Map<string, Map<string, Map<string, number>>>();
 for (let i = 0; i < seeks.length; i++) {
   const seek = seeks[i];
   const next = seeks.slice(i + 1).find((s) => s.player === seek.player);
@@ -75,10 +79,25 @@ for (let i = 0; i < seeks.length; i++) {
   const req = response && reqs.get(response.id)!;
   const ok = response?.frame === seek.frame;
   if (ok) passed++;
+  const byPhase = offsets.get(seek.player) ?? new Map<string, Map<string, number>>();
+  offsets.set(seek.player, byPhase);
+  const phase = seek.phase === null ? "-" : seek.phase.toFixed(2);
+  const counts = byPhase.get(phase) ?? new Map<string, number>();
+  byPhase.set(phase, counts);
+  const delta = response ? `${response.frame - seek.frame >= 0 ? "+" : ""}${response.frame - seek.frame}` : "none";
+  counts.set(delta, (counts.get(delta) ?? 0) + 1);
   events.push({ t: seek.t, text: `${seek.player} seek grade=${ok ? "PASS" : response ? "MISMATCH" : "NO REQUEST"} expected=${seek.frame}` +
     (response ? ` actual=${response.frame} latency=${(req.t - seek.t).toFixed(1)} ms #${response.id}` : "") });
 }
-if (seeks.length) console.log(`Virtual seeks: ${passed}/${seeks.length} matched`);
+if (seeks.length) {
+  console.log(`Virtual seeks: ${passed}/${seeks.length} matched`);
+  // Frame offset of the requested sample by seek phase within the frame.
+  for (const [player, byPhase] of offsets) {
+    for (const [phase, counts] of [...byPhase].sort()) {
+      console.log(`  ${player} phase=${phase} ${[...counts].map(([d, n]) => `${d}:${n}`).join(" ")}`);
+    }
+  }
+}
 
 events.sort((a, b) => a.t - b.t);
 const t0 = events[0].t;

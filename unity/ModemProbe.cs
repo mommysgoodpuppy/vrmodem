@@ -25,8 +25,12 @@ public class ModemProbe : UdonSharpBehaviour
     [Header("Seek pattern")]
     public float[] seekTargets = { 10f, 60f, 20f, 100f, 5f, 75f, 40f, 115f };
     public float seekInterval = 1f;
-    // Zero preserves ordinary media seeks; virtual media targets frame centers.
+    // Zero preserves ordinary media seeks. Virtual media seeks each target
+    // frame once per phase. WMF requests the first sample starting at or
+    // after the seek time, ceil(t * fps), so frame N is aimed at
+    // (N - 1 + phase) / fps.
     public int seekFps;
+    public float[] seekPhases = { 0.5f };
 
     [Header("Pause pattern")]
     public float pauseInterval = 1f;
@@ -74,21 +78,24 @@ public class ModemProbe : UdonSharpBehaviour
     public void _SeekStep()
     {
         if (_failed) return;
-        if (_step >= seekTargets.Length)
+        int phases = seekFps > 0 && seekPhases.Length > 0 ? seekPhases.Length : 1;
+        if (_step >= seekTargets.Length * phases)
         {
             Log("seeks done " + State());
             _step = 0;
             SendCustomEventDelayedSeconds(nameof(_PauseStep), settleSeconds);
             return;
         }
-        float t = Mathf.Clamp(seekTargets[_step], 0f, Mathf.Max(0f, player.GetDuration() - 0.1f));
+        float t = Mathf.Clamp(seekTargets[_step / phases], 0f, Mathf.Max(0f, player.GetDuration() - 0.1f));
         int frame = -1;
+        float phase = 0f;
         if (seekFps > 0)
         {
-            frame = Mathf.FloorToInt(t * seekFps);
-            t = (frame + 0.5f) / seekFps;
+            frame = Mathf.Max(1, Mathf.FloorToInt(t * seekFps));
+            phase = seekPhases.Length > 0 ? seekPhases[_step % phases] : 0.5f;
+            t = (frame - 1 + phase) / seekFps;
         }
-        Log("seek " + t.ToString("F6") + (frame >= 0 ? " frame=" + frame : "") + " from " + State());
+        Log("seek " + t.ToString("F6") + (frame >= 0 ? " frame=" + frame + " phase=" + phase.ToString("F2") : "") + " from " + State());
         player.SetTime(t);
         _step++;
         SendCustomEventDelayedSeconds(nameof(_SeekStep), seekInterval);

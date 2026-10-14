@@ -102,6 +102,8 @@ public static class ProbeSceneBuilder
             foreach (var param in uri.Query.TrimStart('?').Split('&'))
                 if (param.StartsWith("fps=")) fps = int.Parse(param.Substring(4));
             probe.seekFps = fps;
+            // Sub-frame phases show how the player quantizes seek times.
+            probe.seekPhases = new[] { 0.05f, 0.25f, 0.5f, 0.75f, 0.95f };
         }
         // AVPro's runtime Loop setter does not persist its serialized value.
         var playerSettings = new SerializedObject(player);
