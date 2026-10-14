@@ -15,6 +15,9 @@
 // Logs/vrmodem-last-build.txt) without building; --until TEXT ends the run at
 // the first log line with TEXT. With --modem and --world, only the gateway runs
 // (e.g. ShaderEmu: --world ~/ALCOM/Projects/shaderemu --modem --until "[ModemTest] done").
+// --forward SESSION:tcp:HOSTPORT:GUESTPORT is passed to the gateway (repeatable), and
+// --hold SECONDS keeps the gateway and VRChat running that long after the end, e.g. for a
+// shell into the world's machine (shell_check.ts).
 //
 // --modem builds the modem world (MODEM.md) and runs the gateway on
 // 127.0.0.1:8789 beside the probe server: ModemPing pings 1.1.1.1 and resolves
@@ -37,7 +40,8 @@ import { join } from "jsr:@std/path@1";
 
 const args = parseArgs(Deno.args, {
   boolean: ["no-build", "vr"],
-  string: ["url", "matrix", "rtt", "lanes", "intervals", "seeks", "listen", "timeout", "down", "down-player", "live", "modem", "world", "until"],
+  string: ["url", "matrix", "rtt", "lanes", "intervals", "seeks", "listen", "timeout", "down", "down-player", "live", "modem", "world", "until", "forward", "hold"],
+  collect: ["forward"],
 });
 const HOME = Deno.env.get("HOME")!;
 const REPO = new URL("../", import.meta.url).pathname;
@@ -130,7 +134,7 @@ const server = new Deno.Command("deno", {
 const serverOut = await Deno.open(join(runDir, "server.txt"), { write: true, create: true, truncate: true });
 server.stdout.pipeTo(serverOut.writable);
 const gateway = !modemSpec ? null : new Deno.Command("deno", {
-  args: ["task", "gateway", "--listen", GATEWAY, "--lanes", String(modemLanes)],
+  args: ["task", "gateway", "--listen", GATEWAY, "--lanes", String(modemLanes), ...((args.forward ?? []) as string[]).flatMap((f) => ["--forward", f])],
   cwd: join(REPO, "server"),
   env: { LOG_PATH: join(runDir, "gateway.jsonl") },
   stdout: "inherit",
@@ -208,6 +212,10 @@ while (Date.now() < deadline && done.size < PROBES.length) {
   }
 }
 
+if (args.hold) {
+  say(`holding ${args.hold} s for the gateway`);
+  await new Promise((r) => setTimeout(r, Number(args.hold) * 1000));
+}
 await Deno.writeTextFile(join(runDir, "vrchat-probe.log"), probeLines.join("\n") + "\n");
 if (logPath) await Deno.copyFile(logPath, join(runDir, "vrchat-output.log"));
 server.kill("SIGTERM");

@@ -43,6 +43,7 @@ Live streams generated at send time arrive whole, at about 0.5 s latency. See
 | `server/live_check.ts` | Offline check of live samples per QP: size, overflows, decode errors (`deno task live-check`) |
 | `server/gateway.ts` | The modem's gateway: uplink lanes, the data downlink, a passt per client (`deno task gateway`; [MODEM.md](MODEM.md)) |
 | `server/modem/` | Link protocol (`link.ts`), its client and gateway halves, passt wrapper, IP helpers, simulation tests |
+| `server/shell_check.ts` | A shell on the world's machine through a gateway port forward: runs commands and times them (`--interactive` for your own terminal) |
 | `server/sim_client.ts` | A stand-in world against a running gateway: ping and DNS through it (`deno task sim`) |
 | `server/delay_proxy.ts` | Userspace TCP proxy that emulates WAN RTT, handshake cancellation included (`deno task delay`); with `--rtt 0`, a plain relay |
 | `unity/DownProbe.cs` | UdonSharp downlink probe: plays each test video, decodes it with `Downlink.shader`, reads back metadata and errors |
@@ -330,6 +331,7 @@ modem is therefore about 0.6 s plus the uplink.
 | 12-19 | The modem in the world, 8 lanes | 20/20 pings to 1.1.1.1 at 1.18 s; DNS through the gateway |
 | 12-23 | Packets in parts over lanes (FRAG) | Pings 1.15 s on one lane, 0.78 s on four or five |
 | 14-31 | ShaderEmu's world (its Linux in a pixel shader), branch `modem` | 5/5 pings of 1.1.1.1; `wget http://example.com/` over TCP |
+| 14-38 | Shell into that machine: `--forward s1:tcp:2222:23`, its telnetd | `echo SHADER-$((6*7))` → `SHADER-42` in 2.2 s |
 
 ## Open questions
 
