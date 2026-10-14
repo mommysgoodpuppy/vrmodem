@@ -52,7 +52,8 @@ export function describe(p: Uint8Array): string {
   if (proto === 6) {
     const f = p[hl + 13];
     const flags = ["FIN", "SYN", "RST", "PSH", "ACK"].filter((_, i) => f & (1 << i)).join(" ");
-    return `TCP ${src}:${port(0)} > ${dst}:${port(2)} ${flags} ${p.length - hl - (p[hl + 12] >> 4) * 4} bytes`;
+    const u32 = (at: number) => ((p[hl + at] << 24) | (p[hl + at + 1] << 16) | (p[hl + at + 2] << 8) | p[hl + at + 3]) >>> 0;
+    return `TCP ${src}:${port(0)} > ${dst}:${port(2)} ${flags} ${p.length - hl - (p[hl + 12] >> 4) * 4} bytes seq ${u32(4)} ack ${u32(8)}`;
   }
   return `proto ${proto} ${src} > ${dst}`;
 }

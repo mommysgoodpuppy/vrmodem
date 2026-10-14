@@ -19,6 +19,7 @@ import { liveMp4, LiveParams, liveStream, prepare } from "./live_mp4.ts";
 import { frameOf, symbolAt } from "./modem/link.ts";
 import { ModemSession } from "./modem/session.ts";
 import { Passt } from "./modem/passt.ts";
+import { SynFix } from "./modem/synfix.ts";
 import { describe, dotted } from "./modem/ip.ts";
 
 const args = parseArgs(Deno.args, { string: ["listen", "lanes", "forward"], collect: ["forward"] });
@@ -29,7 +30,10 @@ const LOG_DIR = new URL("../logs/", import.meta.url).pathname;
 // Lane videos: 60 fps, 4,194,240 frames (README: about 2^22 is the limit).
 const LANE_FPS = 60, LANE_SECONDS = 69904, LANE_LEAD = 30;
 const PASST_DIR = join(LOG_DIR, "passt");
-const DETAIL = 40; // packets logged one by one per session and direction
+// Packets logged one by one per session and direction; GATEWAY_TRACE=1: all of them, with
+// each downlink packet's first frame and ack (down-first, down-again, down-acked: ms since it came).
+const TRACE = Deno.env.get("GATEWAY_TRACE") === "1";
+const DETAIL = TRACE ? Infinity : 40;
 
 const forwards = new Map<string, { tcp: string[]; udp: string[] }>();
 for (const f of (args.forward ?? []) as string[]) {
@@ -58,30 +62,38 @@ type Client = {
   up: number; // packets to the internet
   down: number;
   symbols: number;
+  synfix: SynFix; // (modem/synfix.ts: passt's SYNs sent again)
 };
 const clients = new Map<string, Client>();
 
 function client(name: string): Client {
   let c = clients.get(name);
   if (c) return c;
-  const fresh: Client = { name, up: 0, down: 0, symbols: 0, modem: undefined! };
+  const fresh: Client = { name, up: 0, down: 0, symbols: 0, modem: undefined!, synfix: new SynFix() };
   fresh.modem = new ModemSession(LANES, (ip) => {
     // Only the machine's own packets go out.
     if (!fresh.passt || ip.length < 20 || dotted(ip, 12) !== dotted(addressBytes(fresh.modem.address), 0)) return;
-    if (fresh.up++ < DETAIL) log({ ev: "up", session: name, ip: describe(ip) });
-    fresh.passt.send(ip);
+    if (fresh.up++ < DETAIL) log({ ev: "up", session: name, ip: describe(ip), bytes: ip.length });
+    fresh.passt.send(fresh.synfix.up(ip));
   }, (nonce, address) => {
     fresh.passt?.close();
     const addr = dotted(addressBytes(address), 0);
     log({ ev: "hello", session: name, nonce, address: addr });
     const fw = forwards.get(name);
-    const passt = new Passt({ address: addr, tcp: fw?.tcp, udp: fw?.udp, dir: PASST_DIR }, (ip) => {
-      if (fresh.down++ < DETAIL) log({ ev: "down", session: name, ip: describe(ip) });
-      fresh.modem.down.push(ip);
+    fresh.synfix = new SynFix();
+    const passt = new Passt({ address: addr, tcp: fw?.tcp, udp: fw?.udp, dir: PASST_DIR }, (from) => {
+      const ip = fresh.synfix.down(from);
+      if (!ip) {
+        if (fresh.down < DETAIL) log({ ev: "down-syn-again", session: name, ip: describe(from) });
+        return;
+      }
+      const n = fresh.modem.down.push(ip, now());
+      if (fresh.down++ < DETAIL) log({ ev: "down", session: name, ip: describe(ip), bytes: ip.length, n });
     }, (code) => log({ ev: "passt-exit", session: name, code }));
     fresh.passt = passt;
     passt.ready.catch((e) => log({ ev: "passt-failed", session: name, error: String(e) }));
   });
+  if (TRACE) fresh.modem.down.trace = (ev, n, ms) => log({ ev: `down-${ev}`, session: name, n, ms: Math.round(ms) });
   clients.set(name, fresh);
   return fresh;
 }
@@ -93,7 +105,7 @@ setInterval(() => {
   for (const c of clients.values()) {
     log({
       ev: "stats", session: c.name, symbols: c.symbols, up: c.up, down: c.down, ips: c.modem.ips,
-      downWaiting: c.modem.down.waiting, downDropped: c.modem.down.dropped,
+      downWaiting: c.modem.down.waiting, downDropped: c.modem.down.dropped, synAgain: c.synfix.dropped,
       duplicates: c.modem.lanes.reduce((n, l) => n + l.duplicates, 0), bad: c.modem.lanes.reduce((n, l) => n + l.deframer.bad, 0),
     });
   }
@@ -200,6 +212,9 @@ Deno.serve({ hostname: HOST, port: Number(PORT), onListen: () => console.log(`ga
   const m = url.pathname.match(/^\/m\/([^/]+)\/(u(\d+)|down)\.mp4$/);
   log({ ev: "req", id, remote: `${info.remoteAddr.hostname}:${info.remoteAddr.port}`, method: req.method, path: url.pathname + url.search, range: req.headers.get("range") });
   if (req.method !== "GET" && req.method !== "HEAD") return new Response("method not allowed", { status: 405 });
+  // 64 random bytes, for a machine with no randomness of its own: ShaderEmu's guest reaches
+  // this computer as 10.0.255.254 and credits them to its kernel (rngseed), which dropbear waits for.
+  if (url.pathname === "/random") return new Response(crypto.getRandomValues(new Uint8Array(64)), { headers: { "content-type": "application/octet-stream", "cache-control": "no-store" } });
   if (!m) return new Response("not found", { status: 404 });
   const c = client(m[1]);
   if (m[2] === "down") return serveDown(req, c, url, id);

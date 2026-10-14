@@ -33,7 +33,7 @@ export class ModemSession {
     if (type === Type.Ip) {
       this.ips++;
       this.onIp(payload);
-    } else if (type === Type.Dack && payload.length === 3) this.down.ack(readU24(payload));
+    } else if (type === Type.Dack && payload.length === 3) this.down.ack(readU24(payload), performance.timeOrigin + performance.now());
     else if (type === Type.Frag && payload.length > 2) this.part(payload);
     else if (type === Type.Hello && payload.length === 8) {
       const v = new DataView(payload.buffer, payload.byteOffset);
@@ -41,7 +41,9 @@ export class ModemSession {
       if (nonce === this.nonce) return; // every lane says hello
       this.nonce = nonce;
       this.address = address;
+      const trace = this.down.trace;
       this.down = new DownTx();
+      this.down.trace = trace;
       this.partial.clear();
       this.onHello(nonce, address);
     }

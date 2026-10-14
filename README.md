@@ -44,6 +44,7 @@ Live streams generated at send time arrive whole, at about 0.5 s latency. See
 | `server/gateway.ts` | The modem's gateway: uplink lanes, the data downlink, a passt per client (`deno task gateway`; [MODEM.md](MODEM.md)) |
 | `server/modem/` | Link protocol (`link.ts`), its client and gateway halves, passt wrapper, IP helpers, simulation tests |
 | `server/shell_check.ts` | A shell on the world's machine through a gateway port forward: runs commands and times them (`--interactive` for your own terminal) |
+| `server/ssh_check.ts` | SSH to the world's machine through a gateway port forward (dropbear): times the login and each command ([MODEM.md](MODEM.md#connections-in)) |
 | `server/sim_client.ts` | A stand-in world against a running gateway: ping and DNS through it (`deno task sim`) |
 | `server/delay_proxy.ts` | Userspace TCP proxy that emulates WAN RTT, handshake cancellation included (`deno task delay`); with `--rtt 0`, a plain relay |
 | `unity/DownProbe.cs` | UdonSharp downlink probe: plays each test video, decodes it with `Downlink.shader`, reads back metadata and errors |

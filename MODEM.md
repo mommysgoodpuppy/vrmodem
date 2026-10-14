@@ -112,3 +112,38 @@ That costs 6% of saturated throughput (791 B/s of 900). In the world with FRAG,
 pings fell from 1,150 ms while one lane was ready to 784 ms with four or five
 (lanes load 6 s apart). DNS answered in 807 ms.
 
+## Connections in
+
+passt opens a forwarded connection with a SYN and sends it again a second
+later if no SYN ACK has come, each time with a sequence number one higher,
+and then counts its data on from the last. A SYN ACK through the modem takes
+about a second, so the machine's kernel reset most connections in (it
+answers a SYN that is not its half-open connection's with RST), and one that
+opened was a byte off, its data never acknowledged: telnet took several
+tries, ssh failed with "Connection reset by peer". `server/modem/synfix.ts`
+sits between passt and the modem: a SYN again is not sent (the downlink
+resends anyway), and for that connection passt's sequence numbers go down by
+what its SYNs added and the machine's acknowledgements up by it. The stats
+line counts them (`synAgain`).
+
+`GET /random` on the gateway is 64 random bytes. ShaderEmu's machine has no
+randomness its kernel trusts, so `getrandom()` (dropbear's first step) waits
+for ever; it fetches these from 10.0.255.254 and credits them (`rngseed`).
+Whoever runs the gateway could predict the machine's keys, as they could
+read its telnet.
+
+`GATEWAY_TRACE=1` logs every packet each way (with TCP sequence numbers),
+and for each downlink packet its first frame and its acknowledgement, in ms
+since it came from passt (`down-first`, `down-again`, `down-acked`).
+
+Measured in ShaderEmu's world (8 lanes, loopback, 14 October 2026), a
+command and its answer:
+- telnet, 2.2 s: busybox's telnetd leaves Nagle on, so the echo of the line
+  goes first and the output waits a round trip for its acknowledgement (a
+  command with no output, 1.07 s). A bare round trip is 0.85 s: a SYN in,
+  the kernel's RST out.
+- ssh (dropbear, which turns Nagle off), 0.9–1.4 s. A login takes 25–32 s:
+  the machine runs some 0.4 million instructions a second, and its key
+  exchange, signature and the check of the client's key are about 12
+  million (dropbear's own curve25519 took 223 s; ShaderEmu builds it with
+  Monocypher's). `server/ssh_check.ts` times both.

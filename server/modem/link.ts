@@ -286,9 +286,11 @@ export function decodeDown(b: Uint8Array): DownFrame | null {
 // Gateway side: packets for the client, each sent in `copies` frames running
 // and again every `rto` ms until acked.
 export class DownTx {
-  private packets: { n: number; data: Uint8Array; sends: number; at: number }[] = [];
+  private packets: { n: number; data: Uint8Array; sends: number; at: number; pushed: number; rounds: number }[] = [];
   private next = 0;
   dropped = 0;
+  // Each packet's first frame and its ack, with the ms since it was pushed (the gateway's trace).
+  trace?: (ev: "first" | "again" | "acked", n: number, ms: number) => void;
 
   constructor(readonly limit = 256, readonly copies = 2, readonly rto = 1500) {}
 
@@ -296,14 +298,15 @@ export class DownTx {
     return this.packets.length;
   }
 
-  push(data: Uint8Array) {
+  push(data: Uint8Array, now = Date.now()) {
     if (data.length < 20 || data.length > MTU) return;
     if (this.packets.length >= this.limit) {
       this.packets.shift();
       this.dropped++;
     }
-    this.packets.push({ n: this.next, data, sends: 0, at: 0 });
+    this.packets.push({ n: this.next, data, sends: 0, at: 0, pushed: now, rounds: 0 });
     this.next = (this.next + 1) % U24;
+    return (this.next + U24 - 1) % U24;
   }
 
   get low() {
@@ -311,8 +314,11 @@ export class DownTx {
   }
 
   // Everything before n arrived.
-  ack(n: number) {
-    while (this.packets.length && after(n, this.packets[0].n)) this.packets.shift();
+  ack(n: number, now = Date.now()) {
+    while (this.packets.length && after(n, this.packets[0].n)) {
+      const p = this.packets.shift()!;
+      this.trace?.("acked", p.n, now - p.pushed);
+    }
   }
 
   // What goes into a frame of `room` bytes for packets.
@@ -323,6 +329,7 @@ export class DownTx {
       if (5 + p.data.length > room) break;
       room -= 5 + p.data.length;
       if (p.sends >= this.copies) p.sends = 0; // a new round of copies
+      if (p.sends === 0) this.trace?.(p.rounds++ ? "again" : "first", p.n, now - p.pushed);
       p.sends++;
       p.at = now;
       out.push({ n: p.n, data: p.data });
