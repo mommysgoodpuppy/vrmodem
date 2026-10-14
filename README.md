@@ -144,6 +144,7 @@ Current state as of 2026-10-14. Desktop VRChat under `proton-rtsp-11.0`,
 | Bits per seek | 22 (2^22 virtual frames at 60 fps × 69904 s) |
 | Per lane, loopback/LAN | 60 seeks/s (one per Udon frame), ≈1.3 kbit/s, lossless |
 | 4 lanes, loopback | 12000/12000 matched, 5.3 kbit/s |
+| 8 lanes, loopback, 5 min | 143823/144000 (99.88%), 9.1 kbit/s sustained, ≈51 seeks/s per lane |
 | Per lane, real internet | ≈1 / TCP connect time to the first hop (≈10/s at 50 ms) |
 | Latency, `SetTime` → server | AVPro ≈2–3 ms, Unity ≈19 ms (loopback); +1.5 RTT over a network |
 
@@ -159,7 +160,12 @@ Current state as of 2026-10-14. Desktop VRChat under `proton-rtsp-11.0`,
   the last seek always got through. Unity never sent the earlier ones, and
   AVPro leaked some unreliably. So the per-lane ceiling is the Udon frame rate.
 - **Lanes are independent.** Four AVPro players at one seek per frame each
-  kept their full rate, with no shared limit. AVPro is the better sender:
+  kept their full rate, with no shared limit. Eight held for 5 minutes. The
+  client's frame rate fell to about 51 fps, which sets the per-lane rate. The
+  0.12% of seeks that failed came in bursts across lanes in the same second
+  (client hitches): WMF merged a seek with the next one, so they're erasures,
+  never wrong symbols. `TIME_WAIT` on the server port leveled off at about
+  11k sockets. AVPro is the better sender:
   about 8× lower latency than Unity.
 - **Over a real path, the TCP handshake sets the rate.** A seek that comes
   before the previous seek's connection is established cancels it unsent.
@@ -227,10 +233,11 @@ Current state as of 2026-10-14. Desktop VRChat under `proton-rtsp-11.0`,
 | 09-48, 09-52 | `ssh -L` through phone | Late, reordered, bursty: SSH artifacts |
 | 09-56 | Plain relay on phone, mobile data | Handshake-limited: 98.6% / 32% / last-only |
 | 10-00 | Handshake-aware proxy, 50 ms | Reproduces 09-56 locally |
+| 10-49 | 8 AVPro lanes, 5 min, per frame | 99.88%, 9.1 kbit/s; losses are clustered hitches |
 
 ## Open questions
 
-- How many lanes before VRChat, Udon, or WMF degrade (8, 16, …)?
+- Where lanes stop paying: 8 cost about 15% of the frame rate (16 untested).
 - Whether a nearby HTTP edge (CDN or relay) forwards `Range` requests
   uncached, restoring about 60 seeks/s per lane over the internet.
 - Whether any globally trusted host can serve custom byte ranges (the only
