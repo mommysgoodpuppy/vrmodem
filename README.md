@@ -31,7 +31,7 @@ See [Findings](#findings) for what has been measured so far, and
 | `server/virtual_mp4_test.ts` | Tests for virtual MP4s, HTTP ranges and pacing, and analyzer grading (`deno task test`) |
 | `server/run_probe.ts` | Orchestrator: headless export, server, VRChat launch, log collection (`deno task probe`) |
 | `server/analyze.ts` | Merged client/server timeline, seek grading, per-rate and aggregate throughput (`deno task analyze`) |
-| `server/delay_proxy.ts` | Userspace TCP proxy that emulates WAN RTT, handshake included (`deno task delay`) |
+| `server/delay_proxy.ts` | Userspace TCP proxy that emulates WAN RTT, handshake cancellation included (`deno task delay`); with `--rtt 0`, a plain relay |
 | `unity/ModemProbe.cs` | UdonSharp probe: automatic load, seek and pause patterns, position sampling |
 | `unity/Editor/ProbeSceneBuilder.cs` | Generates the probe scene, headless or from the editor menu |
 | `unity/Editor/WorldExport.cs` | Headless local-test world export through the SDK's `VRCWorldBuilder` |
@@ -132,6 +132,37 @@ must not be open in the editor at the same time.
 
 ## Findings
 
+### Runs 2026-10-14T09-48 to 10-00 (real internet path through a phone)
+
+The router has no NAT loopback, so the public path went through a phone on
+mobile data, reached over Tailscale (direct to the phone's carrier address,
+so both legs cross the internet). Requests reached the server from the
+carrier's address. Two AVPro lanes, lead 30, at 10/s, 20/s, and every frame.
+
+- **The handshake caps the per-lane rate at about 1 / connect time.** Through
+  a plain TCP relay on the phone (`delay_proxy.ts --rtt 0`), with about 50 ms
+  to connect to the first hop: 10/s matched 1183/1200, 20/s 387/1200, and one
+  per frame 2/1200. Nothing arrived late or out of order; latency p99 was
+  about 260 ms. In the every-frame block the only seek that passed per lane
+  was the last one. A seek that comes before the previous seek's connection
+  is established cancels it, and that request is never sent.
+- **SSH port forwarding is the wrong tool for this.** Through `ssh -L` the same
+  rates arrived late (up to 3.6 s), reordered, and lost in bursts, with or
+  without per-seek response bytes (`lead=1&pace=0.1` didn't help). SSH ends the
+  client's TCP connection locally and multiplexes every connection over one
+  stream.
+- **Earlier proxy runs (09-28 and 09-30) overstated WAN performance.** The
+  first `delay_proxy` accepted locally and delivered every request, so it
+  showed lossless 60/s at 40 and 150 ms RTT. It now waits one RTT before
+  connecting upstream and drops connections the client abandons first. Rerun
+  locally at `--rtt 50` (run 10-00): 1200/1200 at 10/s, 481/1200 at 20/s, and
+  2/1200 at one per frame (only the last seek of each lane), the same pattern
+  as the phone path.
+- **Implications:** a lane's symbol rate is about 1 / (client→first-TCP-endpoint
+  RTT). That makes a nearby TCP endpoint (edge relay or CDN) and more lanes
+  the levers, rather than Udon frame rate. On loopback or LAN, one per frame
+  still holds.
+
 ### Run 2026-10-14T09-35 (2 AVPro lanes over the LAN IP, server on 0.0.0.0:8080)
 
 - **Earlier runs relied on "Allow untrusted URLs".** The client log shows
@@ -146,16 +177,6 @@ must not be open in the editor at the same time.
 - **The public IP wasn't tested.** The router refuses connections from the
   LAN to its own WAN address (no NAT loopback), so a client on this machine
   can't reach the forwarded port. That needs a second vantage point.
-
-### Runs 2026-10-14T09-28 and 09-30 (2 AVPro lanes through `delay_proxy`)
-
-- **RTT costs latency, not rate.** At 40 ms and 150 ms emulated RTT, two
-  lanes seeking every frame matched 2400/2400 each run, at 60 seeks/s per
-  lane, with no extra or reordered requests. Latency from `SetTime` to the
-  server is 1.5 × RTT + about 2 ms (62 ms and 227 ms): the handshake plus the
-  one-way trip. WMF opens each seek's connection without waiting for earlier
-  ones, so at 150 ms about 13 are in flight per lane. Real WAN loss and
-  jitter are still untested.
 
 ### Runs 2026-10-14T09-10 to 09-24 (uplink rate, depth, and lanes)
 
@@ -248,8 +269,10 @@ server's JSONL. `deno task analyze` does this automatically.
 Answered so far: localhost and LAN IPs work in a local test world with
 untrusted URLs allowed. Under Proton both
 players use Media Foundation (`NSPlayer`/`WMFSDK`). Seeks inside the buffered
-range still produce a new request, for sample `ceil(t × fps)`, exactly. One
-seek per Udon frame per player is lossless, and players add up linearly.
+range still produce a new request, for sample `ceil(t × fps)`, exactly. On
+loopback, one seek per Udon frame per player is lossless, and players add up
+linearly. Over a real path, each lane is limited to about one seek per TCP
+connect time.
 
 Still open:
 

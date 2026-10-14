@@ -71,7 +71,7 @@ const seekRequests = server.filter((e) => {
     req.headers.range && !/Chrome/i.test(req.headers["user-agent"] ?? "");
 });
 const used = new Set<number>();
-type Block = { player: string; interval: string; n: number; passed: number; latency: number[]; first: number; last: number; bits: number; ids: number[] };
+type Block = { player: string; interval: string; n: number; passed: number; latency: number[]; first: number; last: number; bits: number; ids: number[]; late: number };
 const blocks = new Map<string, Block>();
 let passed = 0;
 const delivered: { t: number; bits: number }[] = [];
@@ -84,9 +84,11 @@ for (let i = 0; i < seeks.length; i++) {
   const req = response && reqs.get(response.id)!;
   if (match) { passed++; used.add(match.id); }
   const key = `${seek.player} interval=${seek.interval}`;
-  const block = blocks.get(key) ?? { player: seek.player, interval: seek.interval, n: 0, passed: 0, latency: [], first: seek.t, last: seek.t, bits: 0, ids: [] };
+  const block = blocks.get(key) ?? { player: seek.player, interval: seek.interval, n: 0, passed: 0, latency: [], first: seek.t, last: seek.t, bits: 0, ids: [], late: 0 };
   blocks.set(key, block);
   block.n++;
+  // Requested eventually, but outside the five-second window.
+  if (!match && seekRequests.some((e) => e.session === seek.session && e.frame === seek.frame && reqs.get(e.id)!.t >= seek.t)) block.late++;
   block.last = seek.t;
   if (match) {
     block.passed++;
@@ -125,7 +127,7 @@ if (seeks.length) {
     const sorted = [...b.latency].sort((x, y) => x - y);
     const p99 = sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.99))] : 0;
     const lat = b.latency.length ? `latency mean=${(b.latency.reduce((a, x) => a + x, 0) / b.latency.length).toFixed(1)} p99=${p99.toFixed(1)} max=${Math.max(...b.latency).toFixed(1)} ms` : "";
-    console.log(`  ${b.player} interval=${b.interval} ${b.passed}/${b.n} extra=${extra} reordered=${reordered} ${rate.toFixed(1)} seeks/s ${(rate * b.bits).toFixed(0)} bit/s ${lat}`);
+    console.log(`  ${b.player} interval=${b.interval} ${b.passed}/${b.n} late=${b.late} extra=${extra} reordered=${reordered} ${rate.toFixed(1)} seeks/s ${(rate * b.bits).toFixed(0)} bit/s ${lat}`);
   }
   // Aggregate across players: best 1 s and 10 s windows of matched seeks.
   delivered.sort((x, y) => x.t - y.t);
