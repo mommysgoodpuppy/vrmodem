@@ -23,7 +23,14 @@ export const enum Type {
   Ip = 1, // an IP packet
   Dack = 2, // u24: every downlink packet before this number arrived
   Hello = 3, // u32 nonce, u32 machine address: a new client
+  Frag = 4, // u8 packet id, u8 index << 4 | (count - 1), then that part of the packet
 }
+
+// A packet is split over this many lanes: about 16 bytes a part.
+export const parts = (length: number, lanes: number) => Math.max(1, Math.min(lanes, 16, Math.ceil(length / 16)));
+
+// Part i of n of a packet: bytes [floor(i * len / n), floor((i + 1) * len / n)).
+export const partStart = (i: number, n: number, length: number) => Math.floor(i * length / n);
 
 export const symbolOf = (seq: number, chunk: number) => seq * (1 << CHUNK_BITS) + chunk;
 export const frameOf = (symbol: number) => symbol + 1;

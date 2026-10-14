@@ -328,6 +328,7 @@ modem is therefore about 0.6 s plus the uplink.
 | 11-54 | Live padded-intra streams, 720p | Every frame at 60 fps, 0 errors, 6.76 Mbit/s at 4 px; 0.53 s latency |
 | 11-57 | Live, lead 0 / 4 / 10 frames | Latency unchanged (0.52 s): the player buffers |
 | 12-19 | The modem in the world, 8 lanes | 20/20 pings to 1.1.1.1 at 1.18 s; DNS through the gateway |
+| 12-23 | Packets in parts over lanes (FRAG) | Pings 1.15 s on one lane, 0.78 s on four or five |
 
 ## Open questions
 

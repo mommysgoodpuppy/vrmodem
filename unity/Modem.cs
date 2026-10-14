@@ -52,7 +52,10 @@ public class Modem : UdonSharpBehaviour
     private byte[] rxBuf = new byte[RxQueue * Mtu];
     private int[] rxLen = new int[RxQueue];
     private int rxHead, rxTail;
-    private byte[] scratch = new byte[2 + Mtu];
+    private byte[] scratch = new byte[2 + Mtu], part = new byte[2 + Mtu];
+    private bool[] picked;
+    private int[] order;
+    private int fragId;
     // Counts.
     public int sent, received, seeks, resends, frames, badFrames, duplicates, dropped;
     private float statsAt;
@@ -68,6 +71,8 @@ public class Modem : UdonSharpBehaviour
     {
         laneCount = lanes.Length;
         ready = new bool[laneCount];
+        picked = new bool[laneCount];
+        order = new int[laneCount];
         queue = new int[laneCount * Queue];
         qHead = new int[laneCount];
         qTail = new int[laneCount];
@@ -153,15 +158,42 @@ public class Modem : UdonSharpBehaviour
     public bool Connected() { return lastFrame >= 0 && helloHeard; }
     private bool helloHeard;
 
-    // An IPv4 packet out: false when no lane has room.
+    // An IPv4 packet out, whole on the least loaded lane or in parts of about
+    // 16 bytes on the least loaded few (link.ts parts()): false when no room.
     public bool Send(byte[] from, int at, int length)
     {
         if (length < 20 || length > Mtu) return false;
-        int lane = Least();
-        // (room for the packet's chunks and some for acks)
-        if (lane < 0 || Queue - 1 - Waiting(lane) < (length + 2) * 8 / ChunkBits + 16) { dropped++; return false; }
-        Write(lane, 1, from, at, length);
+        int readyCount = 0;
+        for (int i = 0; i < laneCount; i++) if (ready[i]) readyCount++;
+        if (readyCount == 0) { dropped++; return false; }
+        int n = Mathf.Max(1, Mathf.Min(Mathf.Min(readyCount, 16), (length + 15) / 16));
+        // The n least loaded, least first.
+        for (int i = 0; i < laneCount; i++) picked[i] = false;
+        for (int k = 0; k < n; k++)
+        {
+            int best = -1;
+            for (int i = 0; i < laneCount; i++)
+                if (ready[i] && !picked[i] && (best < 0 || Load(i) < Load(best))) best = i;
+            picked[best] = true;
+            order[k] = best;
+            // (room for the part's chunks and some for acks)
+            if (Queue - 1 - Waiting(best) < (length / n + 4) * 8 / ChunkBits + 16) { dropped++; return false; }
+        }
         sent++;
+        if (n == 1)
+        {
+            Write(order[0], 1, from, at, length);
+            return true;
+        }
+        for (int k = 0; k < n; k++)
+        {
+            int a = k * length / n, b = (k + 1) * length / n;
+            part[0] = (byte)fragId;
+            part[1] = (byte)((k << 4) | (n - 1));
+            Buffer.BlockCopy(from, at + a, part, 2, b - a);
+            Write(order[k], 4, part, 0, 2 + b - a);
+        }
+        fragId = (fragId + 1) & 255;
         return true;
     }
 

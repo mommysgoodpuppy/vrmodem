@@ -1,7 +1,7 @@
 // The world's half of the modem, as unity/Modem.cs does it: IP packets in,
 // one symbol per lane per frame out, and downlink frames in.
 
-import { decodeDown, DownRx, LaneTx, MTU, Type, u24 } from "./link.ts";
+import { decodeDown, DownRx, LaneTx, MTU, parts, partStart, Type, u24 } from "./link.ts";
 
 export class ModemClient {
   lanes: LaneTx[];
@@ -10,6 +10,7 @@ export class ModemClient {
   private acked = -1;
   private ackAt = -Infinity;
   bad = 0;
+  private id = 0;
 
   constructor(lanes: number, readonly nonce: number, readonly address: number, readonly ackEvery = 100) {
     this.lanes = Array.from({ length: lanes }, () => new LaneTx());
@@ -26,12 +27,28 @@ export class ModemClient {
     this.lanes[i].write(Type.Hello, hello);
   }
 
-  // An IP packet to send: on the least loaded ready lane.
+  // An IP packet to send: whole on the least loaded ready lane, or in parts
+  // on the least loaded few, so that it arrives sooner.
   send(ip: Uint8Array) {
     if (ip.length < 20 || ip.length > MTU) return false;
-    const lane = this.least();
-    lane?.write(Type.Ip, ip);
-    return !!lane;
+    const ready = this.lanes.filter((_, i) => this.ready[i]).sort((a, b) => a.load - b.load);
+    if (!ready.length) return false;
+    const n = parts(ip.length, ready.length);
+    if (n === 1) {
+      ready[0].write(Type.Ip, ip);
+      return true;
+    }
+    const id = this.id;
+    this.id = (this.id + 1) & 255;
+    for (let i = 0; i < n; i++) {
+      const from = partStart(i, n, ip.length), to = partStart(i + 1, n, ip.length);
+      const payload = new Uint8Array(2 + to - from);
+      payload[0] = id;
+      payload[1] = (i << 4) | (n - 1);
+      payload.set(ip.subarray(from, to), 2);
+      ready[i].write(Type.Frag, payload);
+    }
+    return true;
   }
 
   private least() {

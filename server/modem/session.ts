@@ -9,6 +9,8 @@ export class ModemSession {
   nonce = 0;
   address = 0;
   ips = 0;
+  // Packets in parts, by id: the parts so far.
+  private partial = new Map<number, { n: number; parts: (Uint8Array | undefined)[]; at: number }>();
 
   constructor(
     lanes: number,
@@ -32,6 +34,7 @@ export class ModemSession {
       this.ips++;
       this.onIp(payload);
     } else if (type === Type.Dack && payload.length === 3) this.down.ack(readU24(payload));
+    else if (type === Type.Frag && payload.length > 2) this.part(payload);
     else if (type === Type.Hello && payload.length === 8) {
       const v = new DataView(payload.buffer, payload.byteOffset);
       const nonce = v.getUint32(0, true), address = v.getUint32(4, true);
@@ -39,8 +42,28 @@ export class ModemSession {
       this.nonce = nonce;
       this.address = address;
       this.down = new DownTx();
+      this.partial.clear();
       this.onHello(nonce, address);
     }
+  }
+
+  private part(payload: Uint8Array) {
+    const id = payload[0], i = payload[1] >> 4, n = (payload[1] & 15) + 1;
+    let p = this.partial.get(id);
+    // A part of another count is a new packet with a reused id.
+    if (!p || p.n !== n || p.parts[i]) p = { n, parts: [], at: Date.now() };
+    this.partial.set(id, p);
+    p.parts[i] = payload.slice(2);
+    for (let k = 0; k < n; k++) if (!p.parts[k]) return;
+    this.partial.delete(id);
+    const ip = new Uint8Array(p.parts.reduce((s, x) => s + x!.length, 0));
+    let at = 0;
+    for (const x of p.parts) {
+      ip.set(x!, at);
+      at += x!.length;
+    }
+    this.ips++;
+    this.onIp(ip);
   }
 
   symbol(lane: number, symbol: number) {

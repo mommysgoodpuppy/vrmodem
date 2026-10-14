@@ -105,3 +105,26 @@ Deno.test("throughput, saturated", () => {
     console.log(`loss=${loss} hitch=${hitch} up=${upMs} ms: ${(bytes / 40).toFixed(0)} B/s of packets (raw ${8 * 60 * 15 / 8} B/s), resent ${resends}/${sends}`);
   }
 });
+
+Deno.test("latency of a lone packet, by size", () => {
+  for (const size of [40, 60, 200, 576]) {
+    const session = new ModemSession(8, (ip) => (arrived = t));
+    const client = new ModemClient(8, 1, 0x0a000001);
+    for (let i = 0; i < 8; i++) client.laneReady(i);
+    let t = 0, arrived = -1;
+    const dt = 1000 / 60;
+    const up: { at: number; lane: number; s: number }[] = [];
+    // Hello first, then the packet once the lanes are idle.
+    for (; t < 3000; t += dt) client.poll(t).forEach((s, lane) => s !== null && session.symbol(lane, s));
+    const sent = t;
+    client.send(new Uint8Array(size).fill(0x45, 0, 1));
+    for (; arrived < 0 && t < 20000; t += dt) {
+      client.poll(t).forEach((s, lane) => s !== null && up.push({ at: t + 20, lane, s }));
+      while (up.length && up[0].at <= t) {
+        const u = up.shift()!;
+        session.symbol(u.lane, u.s);
+      }
+    }
+    console.log(`${size} bytes: ${(arrived - sent).toFixed(0)} ms up`);
+  }
+});

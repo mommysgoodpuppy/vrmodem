@@ -53,10 +53,16 @@ first, then zero bits to the end of the chunk.
 | 1 IP | an IPv4 packet, 20 to 576 bytes |
 | 2 DACK | u24 LE: every downlink packet numbered before this arrived |
 | 3 HELLO | u32 LE nonce (random per run), u32 LE address (10.0.H.L as 0x0a00HHLL) |
+| 4 FRAG | u8 packet id, u8 `index << 4 \| (count - 1)`, then that part of a packet |
 
 The client sends HELLO on every lane when it starts. A new nonce restarts the
-gateway's downlink state and passt. A packet goes whole on the least loaded
-lane.
+gateway's downlink state and passt.
+
+A packet of `len` bytes goes in `n = clamp(ceil(len / 16), 1, min(ready lanes,
+16))` parts on the n least loaded lanes, least loaded first. Part i is bytes
+`floor(i × len / n)` to `floor((i + 1) × len / n)`, and ids count mod 256.
+A packet in one part goes as IP instead. Lanes are reliable, so the gateway
+waits for every part.
 
 ## Downlink
 
@@ -81,9 +87,9 @@ left; at 1280×720 with 8 px blocks, 3,520 bytes a frame.
 ## Measured
 
 `deno task test` simulates both halves with 8 lanes:
-- A clean link carries 842 B/s of packets of the raw 900 B/s.
+- A clean link carries 791 B/s of packets of the raw 900 B/s.
 - With 1% of seeks lost singly, 0.5% hitches and 10% of downlink frames lost,
-  it carries 723 B/s.
+  it carries 677 B/s.
 - Every packet arrives exactly once and intact under loss.
 
 `deno task gateway` plus `deno task sim` runs the real thing over HTTP, with
@@ -97,7 +103,12 @@ world's `ModemPing`:
 - had 20 of 20 pings to 1.1.1.1 answered, mean 1,181 ms, max 1,368 ms;
 - resolved example.com through the gateway in 1,152 ms.
 
-No chunk was resent and no frame was bad. About half of the ping time is the
-uplink: a packet goes whole on one lane, and a ping's 33 chunks take 0.55 s
-at 60 seeks a second. The other half is the downlink player's 0.5 s buffer.
+No chunk was resent and no frame was bad. About half of the ping time was the
+uplink: each packet then went whole on one lane, and a ping's 33 chunks take
+0.55 s at 60 seeks a second. The other half is the downlink player's 0.5 s
+buffer. Hence FRAG. Simulated, a lone packet now goes up in 183 ms (40
+bytes), 200 ms (60), 283 ms (200) and 700 ms (576; it was 5.1 s on one lane).
+That costs 6% of saturated throughput (791 B/s of 900). In the world with FRAG,
+pings fell from 1,150 ms while one lane was ready to 784 ms with four or five
+(lanes load 6 s apart). DNS answered in 807 ms.
 
