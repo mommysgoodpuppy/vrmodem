@@ -11,6 +11,11 @@
 //                   [--down [NAME,NAME...]] [--down-player unity|avpro]
 //                   [--live "QUERY;QUERY..."] [--modem [LANES]]
 //
+// --world PROJECT launches the world another Unity project last exported (its
+// Logs/vrmodem-last-build.txt) without building; --until TEXT ends the run at
+// the first log line with TEXT. With --modem and --world, only the gateway runs
+// (e.g. ShaderEmu: --world ~/ALCOM/Projects/shaderemu --modem --until "[ModemTest] done").
+//
 // --modem builds the modem world (MODEM.md) and runs the gateway on
 // 127.0.0.1:8789 beside the probe server: ModemPing pings 1.1.1.1 and resolves
 // a name through it.
@@ -32,7 +37,7 @@ import { join } from "jsr:@std/path@1";
 
 const args = parseArgs(Deno.args, {
   boolean: ["no-build", "vr"],
-  string: ["url", "matrix", "rtt", "lanes", "intervals", "seeks", "listen", "timeout", "down", "down-player", "live", "modem"],
+  string: ["url", "matrix", "rtt", "lanes", "intervals", "seeks", "listen", "timeout", "down", "down-player", "live", "modem", "world", "until"],
 });
 const HOME = Deno.env.get("HOME")!;
 const REPO = new URL("../", import.meta.url).pathname;
@@ -67,7 +72,7 @@ if (args.down !== undefined) {
 const GATEWAY = "127.0.0.1:8789";
 const modemLanes = args.modem === undefined ? 0 : Number(args.modem || 8);
 const modemSpec = modemLanes ? `http://${GATEWAY}|world|${modemLanes}` : "";
-const PROBES = modemSpec ? ["Modem Ping"] : downSpec ? ["Probe Down"]
+const PROBES = args.until ? [String(args.until)] : modemSpec ? ["Modem Ping"] : downSpec ? ["Probe Down"]
   : lanes > 0 ? Array.from({ length: lanes }, (_, i) => `Probe AVPro${i}`) : ["Probe AVPro", "Probe Unity"];
 const timeoutMs = Number(args.timeout ?? 300) * 1000;
 
@@ -87,8 +92,8 @@ async function isRunning(pattern: string) {
 // --- 1. export ---
 
 let vrcw: string;
-const resultFile = join(PROJECT, "Logs/vrmodem-last-build.txt");
-if (args["no-build"]) {
+const resultFile = join(args.world ?? PROJECT, "Logs/vrmodem-last-build.txt");
+if (args["no-build"] || args.world) {
   vrcw = (await Deno.readTextFile(resultFile)).trim();
 } else {
   try {
@@ -193,12 +198,12 @@ while (Date.now() < deadline && done.size < PROBES.length) {
   const text = new TextDecoder().decode(data.subarray(offset));
   offset = data.length;
   for (const line of text.split("\n")) {
-    if (/\[ModemProbe\]|\[Modem\]|Video Playback|AVPro|untrusted|URL/i.test(line)) {
+    if (/\[ModemProbe\]|\[Modem\]|\[ModemTest\]|\[Lan\]|Video Playback|AVPro|untrusted|URL/i.test(line)) {
       probeLines.push(line.trimEnd());
-      if (/\[ModemProbe\]|\[Modem\]/.test(line)) console.log(line.trim());
+      if (/\[ModemProbe\]|\[Modem\]|\[ModemTest\]/.test(line)) console.log(line.trim());
     }
     for (const p of PROBES) {
-      if (line.includes(`${p} probe done`) || line.includes(`${p} event error`)) done.add(p);
+      if (args.until ? line.includes(p) : line.includes(`${p} probe done`) || line.includes(`${p} event error`)) done.add(p);
     }
   }
 }

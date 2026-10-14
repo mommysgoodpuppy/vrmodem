@@ -329,6 +329,7 @@ modem is therefore about 0.6 s plus the uplink.
 | 11-57 | Live, lead 0 / 4 / 10 frames | Latency unchanged (0.52 s): the player buffers |
 | 12-19 | The modem in the world, 8 lanes | 20/20 pings to 1.1.1.1 at 1.18 s; DNS through the gateway |
 | 12-23 | Packets in parts over lanes (FRAG) | Pings 1.15 s on one lane, 0.78 s on four or five |
+| 14-31 | ShaderEmu's world (its Linux in a pixel shader), branch `modem` | 5/5 pings of 1.1.1.1; `wget http://example.com/` over TCP |
 
 ## Open questions
 
