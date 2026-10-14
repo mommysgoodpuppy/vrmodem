@@ -9,6 +9,10 @@
 //   deno task probe [--no-build] [--url URL] [--matrix "URL URL ..."] [--rtt MS] [--lanes N] [--listen HOST:PORT]
 //                   [--intervals 0.1,0,-2] [--seeks 400] [--timeout 300] [--vr]
 //                   [--down [NAME,NAME...]] [--down-player unity|avpro]
+//                   [--live "QUERY;QUERY..."]
+//
+// --live decodes live downlink streams instead (main.ts /l/), one per query,
+// e.g. --live "block=8&qp=36;block=4&qp=36&w=1920&h=1080". All must share a size.
 //
 // --down builds the downlink scene instead: every video of
 // media/down/configs.json (or the named ones) played and decoded in turn.
@@ -24,7 +28,7 @@ import { join } from "jsr:@std/path@1";
 
 const args = parseArgs(Deno.args, {
   boolean: ["no-build", "vr"],
-  string: ["url", "matrix", "rtt", "lanes", "intervals", "seeks", "listen", "timeout", "down", "down-player"],
+  string: ["url", "matrix", "rtt", "lanes", "intervals", "seeks", "listen", "timeout", "down", "down-player", "live"],
 });
 const HOME = Deno.env.get("HOME")!;
 const REPO = new URL("../", import.meta.url).pathname;
@@ -47,6 +51,14 @@ if (args.down !== undefined) {
       [viaProxy(`${base}/s/down/down/${c.name}.mp4`), c.w, c.h, c.block, c.levels, c.seed].join("|"))
     .join(";");
   if (!downSpec) throw new Error(`no downlink configs match ${args.down}`);
+} else if (args.live) {
+  const base = args.listen ? `http://${args.listen.replace(/^0\.0\.0\.0:/, "127.0.0.1:")}` : "http://127.0.0.1:8787";
+  downSpec = String(args.live).split(";").map((query, i) => {
+    const q = new URLSearchParams(query);
+    const get = (k: string, d: number) => Number(q.get(k) ?? d);
+    if (!q.has("seed")) q.set("seed", String(i + 1));
+    return [viaProxy(`${base}/l/down/live${i}.mp4?${q}`), get("w", 1280), get("h", 720), get("block", 8), get("levels", 4), get("seed", i + 1)].join("|");
+  }).join(";");
 }
 const PROBES = downSpec ? ["Probe Down"]
   : lanes > 0 ? Array.from({ length: lanes }, (_, i) => `Probe AVPro${i}`) : ["Probe AVPro", "Probe Unity"];

@@ -20,8 +20,8 @@ an external server, built only from what Udon video players already do.
 
 Status: the seek leak works, with exact 22-bit symbols and parallel lanes.
 Pause modulation is a dead end. The downlink decodes in the world at every
-frame of a 60 fps video, up to 15 Mbit/s error-free at 4K and 61 Mbit/s raw
-(live streaming is still untested). See
+frame of a 60 fps video, up to 15 Mbit/s error-free at 4K and 61 Mbit/s raw.
+Live streams generated at send time arrive whole, at about 0.5 s latency. See
 [Findings](#findings) for what has been measured so far, and
 [WORKFLOW.md](WORKFLOW.md) for machine setup, the automated run loop, and gotchas.
 
@@ -31,7 +31,7 @@ frame of a 60 fps video, up to 15 Mbit/s error-free at 4K and 61 Mbit/s raw
 | --- | --- |
 | `server/main.ts` | Deno probe server: serves media, logs requests, ranges, and per-chunk pull timing as JSONL |
 | `server/gen_media.ts` | ffmpeg test media: frame number as text plus a 16-bit binary strip, and the tiny source frame |
-| `server/virtual_mp4.ts` | In-memory MP4 header and repeated 128-byte intra sample; synthesizes byte ranges |
+| `server/virtual_mp4.ts` | In-memory MP4 header and a repeated intra sample (128 bytes by default); synthesizes byte ranges |
 | `server/virtual_mp4_test.ts` | Tests for virtual MP4s, HTTP ranges and pacing, and analyzer grading (`deno task test`) |
 | `server/run_probe.ts` | Orchestrator: headless export, server, VRChat launch, log collection (`deno task probe`) |
 | `server/analyze.ts` | Merged client/server timeline, seek grading, per-rate and aggregate throughput (`deno task analyze`) |
@@ -39,6 +39,8 @@ frame of a 60 fps video, up to 15 Mbit/s error-free at 4K and 61 Mbit/s raw
 | `server/gen_downlink.ts` | Downlink test videos and an offline ffmpeg check (`deno task gen-down [--check]`) |
 | `unity/Downlink.shader`, `unity/Downlink.cginc` | Downlink decoder and reusable HLSL; output format and ShaderEmu use in [DOWNLINK.md](DOWNLINK.md) |
 | `server/check_downlink_shader.ts` | GPU verification against the TypeScript reference (`deno task check-down-shader`) |
+| `server/live_mp4.ts` | Live downlink: persistent x264, slices padded to a fixed sample size under a `VirtualMp4` header (served at `/l/`) |
+| `server/live_check.ts` | Offline check of live samples per QP: size, overflows, decode errors (`deno task live-check`) |
 | `server/delay_proxy.ts` | Userspace TCP proxy that emulates WAN RTT, handshake cancellation included (`deno task delay`); with `--rtt 0`, a plain relay |
 | `unity/DownProbe.cs` | UdonSharp downlink probe: plays each test video, decodes it with `Downlink.shader`, reads back metadata and errors |
 | `unity/ModemProbe.cs` | UdonSharp probe: automatic load, seek and pause patterns, position sampling |
@@ -272,6 +274,24 @@ levels, and a 24-bit frame number (`server/downlink.ts`).
 
 This is luma only, decoded by ffmpeg.
 
+**Live (`/l/`, `server/live_mp4.ts`).** Frames are made at send time and
+encoded intra-only by one persistent x264 per connection (`-tune zerolatency`,
+fixed QP, `keyint=1`). Each frame's slices are padded with a filler NAL to a
+fixed sample size, so a `VirtualMp4` header (one hour, 60 fps) can describe the
+stream before it exists. A frame that doesn't fit would repeat the last one;
+none did. The size comes from 30 probe frames plus 25%. Offline
+(`deno task live-check`), 8 px / 4 levels is error-free from QP 24 to 48, and
+4 px / 4 levels at QP 36 is error-free in a 25 Mbit/s stream. Encoding takes
+5–9 ms per 720p frame.
+
+In the world (Unity player, 720p, 20 s each), every frame arrived at 60 fps
+with no symbol errors: 8 px at QP 36 and 30 (1.69 Mbit/s), and 4 px at QP 36
+(6.76 Mbit/s). Latency is from the server sending a frame to the world first
+reading its number. It is a steady 520–570 ms, and p99 is within 3 ms of the
+median. Sending 0, 4, 10 or 30 frames ahead changes nothing, so this is the
+player's own buffer, not the pacing. A request/response round trip over the
+modem is therefore about 0.6 s plus the uplink.
+
 ### Dead ends
 
 - **Pause and rate modulation.** With paced media the buffer never fills, so
@@ -300,6 +320,8 @@ This is luma only, decoded by ffmpeg.
 | 11-26 | Same videos, AVPro | Decodes too; the picture is flipped |
 | 11-29 | Unity player, fixed sampling | All 60 fps arrive: 6.76 Mbit/s at 0.016% |
 | 11-33 to 11-40 | 1080p and 4K, both players | 15.4 Mbit/s error-free at 4K; 61 Mbit/s raw at 0.42% |
+| 11-54 | Live padded-intra streams, 720p | Every frame at 60 fps, 0 errors, 6.76 Mbit/s at 4 px; 0.53 s latency |
+| 11-57 | Live, lead 0 / 4 / 10 frames | Latency unchanged (0.52 s): the player buffers |
 
 ## Open questions
 
@@ -309,6 +331,6 @@ This is luma only, decoded by ffmpeg.
 - Whether any globally trusted host can serve custom byte ranges (the only
   path that needs no viewer setting).
 - Behavior on native Windows, and at VR frame rates (90/120 Hz).
-- Downlink: a live, low-latency transport (a paced virtual MP4 of padded
-  intra frames, or HLS/RTSP), and error correction for 4 px blocks.
+- Downlink: whether the player's 0.5 s buffer can be shortened, and error
+  correction for 4 px blocks.
 - Whether playback rate is exposed to Udon (assumed no).

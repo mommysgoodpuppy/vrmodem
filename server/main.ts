@@ -9,9 +9,16 @@
 //   <session> is free-form and only used to group log lines.
 //   kbps caps the send rate for that response so the player can't buffer far
 //   ahead (needed for the pause / consumption-rate channel).
+// /v/<session>/<name>.mp4: virtual MP4 of one repeated tiny frame (README).
+// /l/<session>/<name>.mp4?w=&h=&block=&levels=&seed=&fps=&qp=&lead=&seconds=:
+//   live downlink, downlink.ts test frames made and encoded at send time
+//   (live_mp4.ts), one frame per 1/fps after `lead` frames; logs a "frame"
+//   event per frame sent.
 
 import { extname, join, normalize } from "jsr:@std/path@1";
 import { VirtualMp4 } from "./virtual_mp4.ts";
+import { render } from "./downlink.ts";
+import { LiveEncoder, liveMp4, LiveParams, prepare } from "./live_mp4.ts";
 
 const HOST = Deno.env.get("HOST") ?? "127.0.0.1";
 const PORT = Number(Deno.env.get("PORT") ?? 8787);
@@ -82,6 +89,112 @@ function index(): Response {
 }
 
 let sourceFrame: Uint8Array | undefined;
+
+const prepared = new Map<string, ReturnType<typeof prepare>>();
+
+async function serveLive(req: Request, id: number, session: string, name: string, url: URL): Promise<Response> {
+  const q = (k: string, d: number) => Number(url.searchParams.get(k) ?? d);
+  const p: LiveParams = { w: q("w", 1280), h: q("h", 720), block: q("block", 8), levels: q("levels", 4), seed: q("seed", 1), fps: q("fps", 60), qp: q("qp", 36) };
+  const lead = q("lead", 6), seconds = q("seconds", 3600);
+  const int = (v: number, lo: number, hi: number) => Number.isInteger(v) && v >= lo && v <= hi;
+  // WMF accepts about 2^22 samples (README); 4K is the largest size measured.
+  if (!int(p.w, 544, 3840) || !int(p.h, 32, 2160) || p.w % 2 || p.h % 2 || !int(p.block, 2, 64) || p.block % 2 ||
+    ![2, 4, 8].includes(p.levels) || !int(p.seed, -(2 ** 31), 2 ** 31 - 1) || !int(p.fps, 1, 120) || !int(p.qp, 0, 51) ||
+    !int(lead, 0, 600) || !int(seconds, 1, Math.floor(4_194_240 / p.fps))) {
+    log({ ev: "res", id, status: 400, session });
+    return new Response("bad live parameters", { status: 400 });
+  }
+  const key = JSON.stringify(p);
+  if (!prepared.has(key)) prepared.set(key, prepare(p, 30, 1.25, LOG_DIR));
+  let mp4: VirtualMp4, sampleSize: number;
+  try {
+    const ready = await prepared.get(key)!;
+    sampleSize = ready.sampleSize;
+    mp4 = liveMp4(ready, p.fps, seconds);
+  } catch (e) {
+    prepared.delete(key);
+    log({ ev: "res", id, status: 503, session });
+    return new Response(`live encoder unavailable: ${e}`, { status: 503 });
+  }
+  const headers = new Headers({ "content-type": "video/mp4", "accept-ranges": "bytes", "cache-control": "no-store" });
+  const range = parseRange(req.headers.get("range"), mp4.size);
+  if (range === "unsatisfiable") {
+    headers.set("content-range", `bytes */${mp4.size}`);
+    log({ ev: "res", id, status: 416, size: mp4.size });
+    return new Response(null, { status: 416, headers });
+  }
+  const start = range?.start ?? 0, end = range?.end ?? mp4.size - 1;
+  const length = end - start + 1, status = range ? 206 : 200;
+  headers.set("content-length", String(length));
+  if (range) headers.set("content-range", `bytes ${start}-${end}/${mp4.size}`);
+  const first = mp4.frameAt(Math.max(start, mp4.header.length))!;
+  log({ ev: "res", id, status, session, name, start, end, size: mp4.size, frame: mp4.frameAt(start), live: true, sampleSize, lead, ...p });
+  if (req.method === "HEAD") return new Response(null, { status, headers });
+
+  // The encoder runs two frames ahead of what is sent: a frame's sample only
+  // appears when the next one starts.
+  const encoder = new LiveEncoder(p, sampleSize);
+  let written = first;
+  const feed = async (upTo: number) => {
+    while (written <= upTo) await encoder.write(render(p, written++));
+  };
+  const t0 = now();
+  let sent = 0, closed = false, current = -1, last = mp4.sample;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let wake: (() => void) | undefined;
+  const waitFor = (ms: number) => new Promise<void>((resolve) => {
+    wake = resolve;
+    timer = setTimeout(() => { timer = undefined; wake = undefined; resolve(); }, ms);
+  });
+  const finish = (ev: "done" | "abort") => {
+    if (closed) return;
+    closed = true;
+    if (timer !== undefined) clearTimeout(timer);
+    wake?.();
+    encoder.close();
+    log({ ev, id, sent, ms: now() - t0, overflows: encoder.overflows });
+  };
+  const body = new ReadableStream<Uint8Array>({
+    async pull(ctrl) {
+      if (sent >= length) {
+        ctrl.close();
+        finish("done");
+        return;
+      }
+      if (closed) return;
+      const position = start + sent;
+      let chunk: Uint8Array;
+      if (position < mp4.header.length) chunk = mp4.header.subarray(position, Math.min(mp4.header.length, end + 1));
+      else {
+        const n = mp4.frameAt(position)!;
+        const due = t0 + Math.max(0, n - first - lead + 1) * 1000 / p.fps;
+        while (!closed && due > now()) await waitFor(due - now());
+        if (closed) return;
+        if (n !== current) {
+          try {
+            await feed(n + 1);
+            // A frame larger than the sample size repeats the last one: an erasure.
+            last = (await encoder.take()) ?? last;
+          } catch (e) {
+            finish("abort");
+            ctrl.error(e);
+            return;
+          }
+          current = n;
+          log({ ev: "frame", id, session, name, n });
+        }
+        const off = (position - mp4.header.length) % sampleSize;
+        chunk = last.subarray(off, Math.min(sampleSize, off + end + 1 - position));
+      }
+      sent += chunk.length;
+      ctrl.enqueue(chunk);
+    },
+    cancel() {
+      finish("abort");
+    },
+  }, { highWaterMark: 0 });
+  return new Response(body, { status, headers });
+}
 
 async function serveFile(req: Request, id: number, session: string, rel: string, kbps: number, url?: URL) {
   let virtual: VirtualMp4 | undefined;
@@ -250,6 +363,8 @@ Deno.serve({ hostname: HOST, port: PORT, onListen: () => {
   }
   if (url.pathname === "/") return index();
 
+  const l = url.pathname.match(/^\/l\/([^/]+)\/([^/]+)\.mp4$/);
+  if (l) return serveLive(req, id, l[1], l[2], url);
   const v = url.pathname.match(/^\/v\/([^/]+)\/([^/]+\.mp4)$/);
   if (v) return serveFile(req, id, v[1], v[2], 0, url);
   const m = url.pathname.match(/^\/s\/([^/]+)\/(.+)$/);

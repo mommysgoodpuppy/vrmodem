@@ -36,6 +36,8 @@ public class DownProbe : UdonSharpBehaviour
     public float gap = 6f;
     public int texelsPerFrame = 6000;
     public int metaInFlight = 6;
+    // A live stream never ends: stop each one after this many seconds of play.
+    public float playSeconds = 20f;
 
     private int _config = -1;
     private bool _playing, _bulkPending, _summing;
@@ -78,6 +80,21 @@ public class DownProbe : UdonSharpBehaviour
         Log("down " + _config + " ready dur=" + player.GetDuration().ToString("F3"));
         player.Play();
         _playing = true;
+        _readyAt = Time.time;
+        SendCustomEventDelayedSeconds(nameof(_Timeout), playSeconds);
+    }
+
+    private float _readyAt;
+
+    public void _Timeout()
+    {
+        // A finite video may have ended and the next one started since this was
+        // scheduled; delayed events carry no argument, so check the elapsed time.
+        if (!_playing || Time.time - _readyAt < playSeconds - 0.5f) return;
+        Log("down " + _config + " stop after " + playSeconds.ToString("F0") + " s");
+        player.Stop();
+        _playing = false;
+        SendCustomEventDelayedSeconds(nameof(_Next), gap);
     }
 
     public override void OnVideoEnd()

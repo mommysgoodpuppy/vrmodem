@@ -44,7 +44,9 @@ export class VirtualMp4 {
   readonly size: number;
   readonly frames: number;
 
-  constructor(source: Uint8Array, readonly fps: number, seconds: number) {
+  // sampleSize: every sample's size in bytes (default 128). The source's own
+  // sample is padded to it; a live stream sends other samples of that size.
+  constructor(source: Uint8Array, readonly fps: number, seconds: number, sampleSize = 128) {
     this.frames = fps * seconds;
     if (!Number.isInteger(fps) || fps < 1 || fps > 240 ||
       !Number.isSafeInteger(this.frames) || this.frames < 1 || this.frames > 0xffffffff) {
@@ -62,7 +64,7 @@ export class VirtualMp4 {
     const avcc = child(stsd.subarray(94), "avcC");
     if ((avcc[4] & 3) !== 3) throw new Error("source must use four-byte NAL lengths");
     // x264's encoder-information SEI dominates this tiny frame. Keep the
-    // actual IDR and add a valid filler NAL to reach at least 128 B per frame.
+    // actual IDR and add a valid filler NAL to reach sampleSize bytes per frame.
     const nals: Uint8Array[] = [];
     for (let at = offset; at < offset + length;) {
       const n = u32(source, at);
@@ -71,7 +73,7 @@ export class VirtualMp4 {
       at += 4 + n;
     }
     const payload = concat(nals);
-    const filler = new Uint8Array(Math.max(2, 128 - payload.length - 4)).fill(0xff);
+    const filler = new Uint8Array(Math.max(2, sampleSize - payload.length - 4)).fill(0xff);
     filler[0] = 12;
     filler[filler.length - 1] = 0x80;
     this.sample = concat([payload, words(filler.length), filler]);

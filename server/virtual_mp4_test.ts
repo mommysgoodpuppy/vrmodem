@@ -63,7 +63,7 @@ Deno.test("HTTP ranges, pacing, cancellation and frame logs", async () => {
   try {
     await Deno.mkdir(`${dir}/server`);
     await Deno.mkdir(`${dir}/media`);
-    for (const name of ["main.ts", "virtual_mp4.ts", "deno.lock"]) {
+    for (const name of ["main.ts", "virtual_mp4.ts", "live_mp4.ts", "downlink.ts", "deno.lock"]) {
       await Deno.copyFile(new URL(name, import.meta.url), `${dir}/server/${name}`);
     }
     await command("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "color=c=gray:s=64x64:r=60", "-frames:v", "1", "-c:v", "libx264", "-profile:v", "baseline", "-pix_fmt", "yuv420p", "-x264-params", "keyint=1:scenecut=0", `${dir}/media/frame-64.mp4`]);

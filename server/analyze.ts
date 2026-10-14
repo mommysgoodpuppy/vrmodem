@@ -21,6 +21,11 @@ const day = new Date(server[0].t).toISOString().slice(0, 10);
 
 const reqs = new Map<number, { t: number; remote: string; path: string; method: string; headers: Record<string, string> }>();
 const buckets = new Map<string, number>(); // `${bucketStart}:${id}` -> bytes
+// Live downlink: when each frame of a stream was first sent, by name, and the
+// streams' encoder overflows (frames repeated because they didn't fit).
+const liveSent = new Map<string, Map<number, number>>();
+const liveName = new Map<number, string>();
+const overflows = new Map<string, number>();
 for (const e of server) {
   if (e.ev === "req") {
     reqs.set(e.id, e);
@@ -28,7 +33,14 @@ for (const e of server) {
     events.push({ t: e.t, text: `srv #${e.id} ${e.remote} ${e.method} ${e.path} range=${e.headers.range ?? "-"} ua=${ua}` });
   } else if (e.ev === "res") {
     events.push({ t: e.t, text: `srv #${e.id} ${e.status} ${e.start ?? ""}-${e.end ?? ""}/${e.size ?? ""}${"frame" in e ? ` session=${e.session} frame=${e.frame ?? "header"}` : ""}` });
+  } else if (e.ev === "frame") {
+    // A player may reconnect; the latest connection's send time counts.
+    if (!liveSent.has(e.name)) liveSent.set(e.name, new Map());
+    liveSent.get(e.name)!.set(e.n, e.t);
+    liveName.set(e.id, e.name);
   } else if (e.ev === "done" || e.ev === "abort") {
+    const name = liveName.get(e.id);
+    if (name) overflows.set(name, (overflows.get(name) ?? 0) + (e.overflows ?? 0));
     events.push({ t: e.t, text: `srv #${e.id} ${e.ev} sent=${e.sent} in ${(e.ms / 1000).toFixed(2)} s` });
   } else if (e.ev === "pull") {
     const k = `${Math.floor(e.t / BUCKET) * BUCKET}:${e.id}`;
@@ -151,10 +163,10 @@ for (const e of events) {
   const m = e.text.match(/^Probe Down\s+down (\d+) (.*)$/);
   if (!m) continue;
   const n = Number(m[1]);
-  const d = downs.get(n) ?? { url: "", meta: new Map(), uf: [], flips: new Set(), samples: 0, errors: 0, blocks: 0, status: "no event" };
+  const d: Down = downs.get(n) ?? { url: "", meta: new Map(), uf: [], flips: new Set(), samples: 0, errors: 0, blocks: 0, status: "no event" };
   downs.set(n, d);
   let x;
-  if ((x = m[2].match(/^load (\S+)/))) d.url = x[1];
+  if ((x = m[2].match(/^load (\S+)/))) d.url = x[1].replaceAll("&amp;", "&"); // the VRChat log escapes it
   else if ((x = m[2].match(/^meta frame=(\d+) flip=(\d)(?: uf=(\d+))?/))) {
     if (!d.meta.has(Number(x[1]))) d.meta.set(Number(x[1]), e.t);
     d.flips.add(Number(x[2]));
@@ -169,7 +181,9 @@ if (downs.size) {
   console.log("Downlink:");
   for (const [n, d] of downs) {
     const name = d.url.match(/([^/]+)\.mp4/)?.[1] ?? d.url;
-    const levels = Number(name.match(/l(\d+)/)?.[1] ?? 2);
+    const query = new URLSearchParams(d.url.split("?")[1] ?? "");
+    // Live streams take their layout from the query (main.ts defaults: 4 levels).
+    const levels = Number(query.get("levels") ?? (d.url.includes("/l/") ? 4 : name.match(/l(\d+)/)?.[1] ?? 2));
     const frames = [...d.meta.keys()].sort((x, y) => x - y);
     const times = [...d.meta.values()].sort((x, y) => x - y);
     const span = frames.length > 1 ? (times[times.length - 1] - times[0]) / 1000 : 0;
@@ -182,6 +196,17 @@ if (downs.size) {
     console.log(`  ${n} ${name.padEnd(12)} ${d.status}: ${frames.length} frames ${frames[0] ?? "-"}..${frames[frames.length - 1] ?? "-"} ` +
       `(${gaps} missing) ${fps.toFixed(1)} fps${Number.isNaN(ufps) ? "" : ` (Udon ${ufps.toFixed(1)})`}, flip=${[...d.flips].join("/") || "-"}, ` +
       `${d.samples} sampled, symbol errors ${Number.isNaN(ser) ? "-" : (ser * 100).toFixed(4) + "%"}, ${mbit.toFixed(2)} Mbit/s`);
+    const sentAt = liveSent.get(name);
+    if (sentAt) {
+      // Send to first sight in the world, past the lead (sent all at once).
+      const lead = Number(query.get("lead") ?? 30);
+      const lat = [...d.meta].filter(([f]) => f >= lead && sentAt.has(f)).map(([f, t]) => t - sentAt.get(f)!).sort((x, y) => x - y);
+      const q = (p: number) => lat[Math.min(lat.length - 1, Math.floor(lat.length * p))];
+      if (lat.length) {
+        console.log(`    live: ${sentAt.size} sent, overflows=${overflows.get(name) ?? 0}, latency min=${lat[0].toFixed(0)} ` +
+          `median=${q(0.5).toFixed(0)} p99=${q(0.99).toFixed(0)} max=${lat[lat.length - 1].toFixed(0)} ms (${lat.length} frames)`);
+      } else console.log(`    live: ${sentAt.size} sent, overflows=${overflows.get(name) ?? 0}, no frames past the lead seen`);
+    }
   }
 }
 if (seeks.length) {
