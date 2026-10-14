@@ -18,7 +18,9 @@ an external server, built only from what Udon video players already do.
 - **Session identity:** paste one session URL into a `VRCUrlInputField` (allowed
   at runtime). Fall back to IP matching.
 
-See [Findings](#findings) for what has been measured so far, and
+Status: the seek leak works, with exact 22-bit symbols and parallel lanes.
+Pause modulation is a dead end, and the downlink hasn't been built yet. See
+[Findings](#findings) for what has been measured so far, and
 [WORKFLOW.md](WORKFLOW.md) for machine setup, the automated run loop, and gotchas.
 
 ## Layout
@@ -132,150 +134,103 @@ must not be open in the editor at the same time.
 
 ## Findings
 
-### Runs 2026-10-14T09-48 to 10-00 (real internet path through a phone)
+Current state as of 2026-10-14. Desktop VRChat under `proton-rtsp-11.0`,
+60 fps, "Allow untrusted URLs" on. Run directories are under `logs/`.
 
-The router has no NAT loopback, so the public path went through a phone on
-mobile data, reached over Tailscale (direct to the phone's carrier address,
-so both legs cross the internet). Requests reached the server from the
-carrier's address. Two AVPro lanes, lead 30, at 10/s, 20/s, and every frame.
+### Uplink: seeks as an address bus
 
-- **The handshake caps the per-lane rate at about 1 / connect time.** Through
-  a plain TCP relay on the phone (`delay_proxy.ts --rtt 0`), with about 50 ms
-  to connect to the first hop: 10/s matched 1183/1200, 20/s 387/1200, and one
-  per frame 2/1200. Nothing arrived late or out of order; latency p99 was
-  about 260 ms. In the every-frame block the only seek that passed per lane
-  was the last one. A seek that comes before the previous seek's connection
-  is established cancels it, and that request is never sent.
-- **SSH port forwarding is the wrong tool for this.** Through `ssh -L` the same
-  rates arrived late (up to 3.6 s), reordered, and lost in bursts, with or
-  without per-seek response bytes (`lead=1&pace=0.1` didn't help). SSH ends the
-  client's TCP connection locally and multiplexes every connection over one
-  stream.
-- **Earlier proxy runs (09-28 and 09-30) overstated WAN performance.** The
-  first `delay_proxy` accepted locally and delivered every request, so it
-  showed lossless 60/s at 40 and 150 ms RTT. It now waits one RTT before
-  connecting upstream and drops connections the client abandons first. Rerun
-  locally at `--rtt 50` (run 10-00): 1200/1200 at 10/s, 481/1200 at 20/s, and
-  2/1200 at one per frame (only the last seek of each lane), the same pattern
-  as the phone path.
-- **Implications:** a lane's symbol rate is about 1 / (client→first-TCP-endpoint
-  RTT). That makes a nearby TCP endpoint (edge relay or CDN) and more lanes
-  the levers, rather than Udon frame rate. On loopback or LAN, one per frame
-  still holds.
+| Result | Value |
+| --- | --- |
+| Bits per seek | 22 (2^22 virtual frames at 60 fps × 69904 s) |
+| Per lane, loopback/LAN | 60 seeks/s (one per Udon frame), ≈1.3 kbit/s, lossless |
+| 4 lanes, loopback | 12000/12000 matched, 5.3 kbit/s |
+| Per lane, real internet | ≈1 / TCP connect time to the first hop (≈10/s at 50 ms) |
+| Latency, `SetTime` → server | AVPro ≈2–3 ms, Unity ≈19 ms (loopback); +1.5 RTT over a network |
 
-### Run 2026-10-14T09-35 (2 AVPro lanes over the LAN IP, server on 0.0.0.0:8080)
+- **Every seek is a new request.** Both players use Windows Media Foundation
+  (`NSPlayer/12.00.19041.4894 WMFSDK/…`). `SetTime` opens a new TCP
+  connection with `Range: bytes=<offset>`, then aborts the previous one. This
+  happens even when the target is already buffered.
+- **The offset names the frame exactly.** WMF requests the first sample that
+  starts at or after the seek time, `ceil(t × fps)`. Aiming frame N at
+  `(N − 0.5) / fps` matched every seek at sub-frame phases 0.05–0.95, so
+  float32 jitter isn't a concern. The server decodes `N = (offset − header) / 128`.
+- **The last `SetTime` in an Udon frame wins.** In bursts of 2–8 per frame,
+  the last seek always got through. Unity never sent the earlier ones, and
+  AVPro leaked some unreliably. So the per-lane ceiling is the Udon frame rate.
+- **Lanes are independent.** Four AVPro players at one seek per frame each
+  kept their full rate, with no shared limit. AVPro is the better sender:
+  about 8× lower latency than Unity.
+- **Over a real path, the TCP handshake sets the rate.** A seek that comes
+  before the previous seek's connection is established cancels it unsent.
+  Through a relay on a phone on mobile data (about 50 ms to connect): 98.6%
+  at 10/s, 32% at 20/s, and only each lane's last seek at one per frame.
+  Nothing arrived late or reordered. `delay_proxy.ts` now models this, and
+  `--rtt 50` reproduces the pattern locally. Per-lane rate ≈
+  1 / (client → first TCP endpoint RTT), so the levers are more lanes and a
+  nearby TCP endpoint, not frame rate.
 
-- **Earlier runs relied on "Allow untrusted URLs".** The client log shows
-  `Allow untrusted URLs: True`, and every load logs `You are playing an
-  untrusted URL (Domain: …) in a local world`, for `127.0.0.1` as well as
-  `192.168.1.101`. That message says the domain must be added to "the world's
-  Video Player Allowed Domains list on the website". So an uploaded world
-  should be able to allow its modem server for players who haven't enabled
-  untrusted URLs. That is untested.
-- **The LAN path behaves like loopback.** 1200/1200 seeks matched at
-  60 seeks/s per lane, with p99 latency 3.7 ms.
-- **The public IP wasn't tested.** The router refuses connections from the
-  LAN to its own WAN address (no NAT loopback), so a client on this machine
-  can't reach the forwarded port. That needs a second vantage point.
+### Media limits
 
-### Runs 2026-10-14T09-10 to 09-24 (uplink rate, depth, and lanes)
+- **The virtual MP4 works in both players**: 64×64 repeated IDR frames, 128 B
+  each, no audio, served from memory with byte ranges.
+- **WMF accepts at most about 2^22 samples.** 4,194,240 samples loaded at 30,
+  60, and 240 fps (up to 38.8 h). 8,388,480 samples fail with `PlayerError`
+  after WMF reads past the end of the file. That file is just under 1 GiB, so
+  the limit may be on size instead. Either way, float32 `SetTime` precision
+  runs out around there too.
+- **Read-ahead is about 4.5 MiB, then TCP backpressure.** The server paces
+  virtual media (`lead=30&pace=1`: 30 frames at once, then real time) so each
+  seek costs about 4 KB.
 
-- **One seek per Udon frame is lossless.** At 60 fps (desktop), 400 random
-  far-apart seeks per player per rate, at 10/s and at every frame, all matched
-  on both players, with no extra or reordered requests. AVPro p99 latency is
-  4.8 ms at 60/s; Unity is about 19 ms throughout.
-- **Within one Udon frame, the last `SetTime` wins.** In bursts of 2, 4, or 8
-  seeks per frame, the last seek matched 100% of the time on both players.
-  Unity never issued a request for an earlier one. AVPro occasionally leaked
-  earlier ones (5–20%, unreliable). The per-player ceiling is the Udon frame
-  rate.
-- **Lanes scale linearly.** Four AVPro players seeking every frame matched
-  12000/12000, each at 60 seeks/s, for 5.3 kbit/s aggregate over 10 s at
-  22 bits per seek.
-- **WMF accepts at most about 2^22 samples.** A matrix of virtual MP4s loaded
-  at 4,194,240 samples at 30, 60, and 240 fps (up to 38.8 h). At 8,388,480
-  samples (60 or 240 fps) both players fail with `PlayerError` after WMF
-  requests `bytes=<size>-` past the end of the file. That file is
-  1,073,726,237 bytes, just under 2^30, so this may be a size limit instead;
-  either way it's about where float32 `SetTime` precision runs out too. The
-  default is now 60 fps × 69904 s = 4,194,240 frames, 22 bits per seek.
+### URLs and hosting
 
-### Runs 2026-10-14T09-01 and 09-05 (virtual MP4, sub-frame phase sweep)
+- **Every run so far relied on "Allow untrusted URLs".** VRChat logs
+  `You are playing an untrusted URL (Domain: …) in a local world` for
+  `127.0.0.1` and LAN IPs alike, and says the domain must be on "the world's
+  Video Player Allowed Domains list on the website". An uploaded world could
+  presumably allow its modem server that way. That's untested.
+- **Each load is preceded by a Chrome-UA request** (VRChat's URL check), which
+  is aborted after a few KiB. The analyzer ignores it.
+- **The LAN IP behaves like loopback.** The public IP can't be reached from
+  this machine because the router has no NAT loopback. Real-internet tests go
+  through a relay on another host instead (see below).
+- **Don't use SSH port forwarding as a relay.** It ends TCP locally and
+  multiplexes every connection over one stream, so seeks arrived up to 3.6 s
+  late, reordered, and lost in bursts.
 
-- **Seek quantization is `ceil(t × fps)`.** WMF requests the first sample
-  whose start time is at or after the seek time. Seeking at
-  `(N + phase) / fps` for phases 0.05–0.95 requested frame N+1 every time,
-  on both players (80/80). In the 08-54 run, frame-center seeks were all
-  +1 for the same reason.
-- **Aiming at `(N − 1 + phase) / fps` is exact.** 80/80 PASS at every phase
-  from 0.05 to 0.95, so at least 90% of each frame interval decodes
-  correctly; float32 `SetTime` jitter isn't a concern at 60 fps × 1 h. Each
-  seek therefore carries log2(216000) ≈ 17.7 bits.
-- **Latency** from the Udon `SetTime` log line to the server request: AVPro
-  2.3 ms mean (3.0 max), Unity 18.9 ms mean (21.5 max).
-- **Pauses are invisible at `pace=1`.** A paced 7.5 KiB/s stream never fills
-  the roughly 4.5 MiB read-ahead, so the client keeps pulling while paused,
-  and pause/play opens no new connection. The pause channel needs a stream
-  whose bitrate fills the buffer within about a second.
+### Dead ends
 
-### Run 2026-10-14T08-54 (virtual MP4, 60 fps × 1 h, `lead=30&pace=1`)
+- **Pause and rate modulation.** With paced media the buffer never fills, so
+  pausing changes nothing the server can see, and pause/play opens no
+  connection. Seeks make this channel unnecessary.
+- **Several seeks per Udon frame.** Only the last one counts (see above).
 
-- Both players loaded the virtual MP4, reported a 3600 s duration, and finished
-  the seek and pause phases without video errors. Not yet graded with
-  `deno task analyze`.
+### Run log
 
-### Run 2026-10-14T08-30 (proton-rtsp-11.0, desktop, intra MP4 over 127.0.0.1)
+| Run | What | Result |
+| --- | --- | --- |
+| 08-30 | Real intra MP4, both players | WMF user agent; every seek is a deterministic `Range` request |
+| 08-54 | First virtual MP4 | Loads in both; frame-center seeks all land on N+1 |
+| 09-01, 09-05 | Sub-frame phase sweep | `ceil(t × fps)`; aiming at N − 0.5 matched 80/80 |
+| 09-10 | Rate sweep 1/s → per frame | 240/240 including 60/s |
+| 09-13, 09-16 | 240 fps × 34952 s; load matrix | `PlayerError` above about 2^22 samples |
+| 09-20 | 400 seeks per rate, bursts | Per frame lossless; last `SetTime` per frame wins |
+| 09-24 | 4 AVPro lanes | 12000/12000, 5.3 kbit/s |
+| 09-28, 09-30 | Old `delay_proxy`, 40/150 ms | Lossless, but too optimistic (no handshake modelled) |
+| 09-35 | LAN IP on 0.0.0.0:8080 | Same as loopback; revealed the untrusted-URL dependency |
+| 09-48, 09-52 | `ssh -L` through phone | Late, reordered, bursty: SSH artifacts |
+| 09-56 | Plain relay on phone, mobile data | Handshake-limited: 98.6% / 32% / last-only |
+| 10-00 | Handshake-aware proxy, 50 ms | Reproduces 09-56 locally |
 
-- **Local URLs work** in both players in a local test world. (Corrected in run
-  09-35: this relied on "Allow Untrusted URLs" being enabled.)
-- **Both players use Windows Media Foundation under Proton.** The user agent
-  is `NSPlayer/12.00.19041.4894 WMFSDK/12.00.19041.4894` for AVPro and for the
-  Unity player. A request with a Chrome user agent precedes each load (VRChat's
-  URL check) and is aborted after a few hundred KiB.
-- **Every seek is visible to the server.** `SetTime` opens a new TCP
-  connection with `Range: bytes=<offset>` 2–20 ms after the Udon call, then
-  aborts the previous connection. This happens even when the target is already
-  buffered.
-- **The offset is deterministic.** It is exactly the target frame's sample
-  offset, and identical across both players (seek 10 s → `807590`). With an
-  all-intra file, each seek therefore carries log2(frames) bits; this file has
-  3600 frames, about 11.8 bits. A 1 Hz seek rate was clean; higher rates are
-  untested.
-- **Read-ahead is capped at about 4.5 MiB, then TCP backpressure.** Every
-  connection pulled roughly 4.6–4.8 MB at once, then stalled. For this file
-  (about 79 KB/s) that is about 58 s ahead, so pause and rate modulation can't
-  be seen yet. The pause channel needs a high-bitrate stream (filler data) or
-  server pacing (`?kbps=`) so the buffer drains in about a second.
-- Both players looped at the end (`event loop`): `loop` defaults to on for
-  components added from code.
+## Open questions
 
-## Probe protocol
-
-For each backend (AVPro, Unity) × media (intra MP4, 1 s GOP MP4, HLS):
-
-1. Load, play, and let it settle. Record initial requests and how far the
-   player buffers ahead (pull timing without `kbps`).
-2. Run the seek pattern. For each seek, record whether a new request appears,
-   its offset or segment, latency from Udon log to server log, and whether the
-   target is reached (sampling).
-3. Repeat with `?kbps=` near the media bitrate, then run the pause pattern.
-   Check whether the pull timing visibly follows the pause/play schedule, and
-   how long it lags.
-4. Repeat with seek intervals of 0.5 s and 0.2 s to find the rate limit.
-
-Correlate the `[ModemProbe]` lines in VRChat's `output_log` (UTC) with the
-server's JSONL. `deno task analyze` does this automatically.
-
-Answered so far: localhost and LAN IPs work in a local test world with
-untrusted URLs allowed. Under Proton both
-players use Media Foundation (`NSPlayer`/`WMFSDK`). Seeks inside the buffered
-range still produce a new request, for sample `ceil(t × fps)`, exactly. On
-loopback, one seek per Udon frame per player is lossless, and players add up
-linearly. Over a real path, each lane is limited to about one seek per TCP
-connect time.
-
-Still open:
-
-- Behavior on Windows, for comparison with Proton.
-- Whether LAN or public hosts behave the same as localhost.
+- How many lanes before VRChat, Udon, or WMF degrade (8, 16, …)?
+- Whether a nearby HTTP edge (CDN or relay) forwards `Range` requests
+  uncached, restoring about 60 seeks/s per lane over the internet.
+- Whether a world's allowed-domains list makes this work for players without
+  "Allow untrusted URLs".
+- Behavior on native Windows, and at VR frame rates (90/120 Hz).
+- Downlink: data video read back through `VRCAsyncGPUReadback`, throughput
+  and error rate.
 - Whether playback rate is exposed to Udon (assumed no).
