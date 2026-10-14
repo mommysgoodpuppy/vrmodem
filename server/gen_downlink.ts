@@ -1,32 +1,36 @@
 // Downlink test videos (downlink.ts layout) into ../media/down, and an offline
 // check that decodes them again with ffmpeg as the world would.
 //
-//   deno task gen-down [--seconds 10] [--fps 60[,30]] [--only NAME,NAME] [--check]
+//   deno task gen-down [--seconds 10] [--fps 60[,30]] [--size 1280x720[,1920x1080]]
+//                      [--only NAME,NAME] [--check]
 //
-// Each config is a block size, a number of gray levels, a bitrate and a frame
-// rate, 1280 x 720. Names carry the frame rate when it isn't 60 (b8l4-8M-30fps).
+// Each config is a block size, a number of gray levels, a bitrate, a frame
+// rate and a size. A config's bitrate is given for 720p and scaled by pixel
+// count. Names carry the rate and size when they aren't 60 and 720p
+// (b8l4-8M-30fps, b4l4-20M-1080p).
 // media/down/configs.json lists them for the world builder and the analyzer.
 
 import { parseArgs } from "jsr:@std/cli@1/parse-args";
 import { blocks, decode, Layout, render } from "./downlink.ts";
 
-const args = parseArgs(Deno.args, { boolean: ["check"], string: ["seconds", "fps", "only"] });
+const args = parseArgs(Deno.args, { boolean: ["check"], string: ["seconds", "fps", "only", "size"] });
 const seconds = Number(args.seconds ?? 10);
 const rates = String(args.fps ?? "60").split(",").map(Number);
 const only = args.only ? new Set(String(args.only).split(",")) : null;
 const dir = new URL("../media/down/", import.meta.url).pathname;
 await Deno.mkdir(dir, { recursive: true });
 
-const W = 1280, H = 720;
+const sizes = String(args.size ?? "1280x720").split(",").map((v) => v.split("x").map(Number));
 const configs: (Layout & { name: string; kbps: number; fps: number })[] = [];
-for (const fps of rates) {
+for (const [W, H] of sizes) for (const fps of rates) {
+  const scale = (W * H) / (1280 * 720);
   for (const block of [16, 8, 4]) {
     for (const levels of [2, 4]) {
       for (const kbps of [8000, 20000]) {
         const base = `b${block}l${levels}-${kbps / 1000}M`;
         if (only && !only.has(base)) continue;
-        const name = fps === 60 ? base : `${base}-${fps}fps`;
-        configs.push({ name, w: W, h: H, block, levels, seed: configs.length + 1, kbps, fps });
+        const name = base + (fps === 60 ? "" : `-${fps}fps`) + (H === 720 ? "" : `-${H}p`);
+        configs.push({ name, w: W, h: H, block, levels, seed: configs.length + 1, kbps: Math.round(kbps * scale), fps });
       }
     }
   }

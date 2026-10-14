@@ -19,8 +19,9 @@ an external server, built only from what Udon video players already do.
   at runtime). Fall back to IP matching.
 
 Status: the seek leak works, with exact 22-bit symbols and parallel lanes.
-Pause modulation is a dead end. The downlink decodes in the world: up to
-6.8 Mbit/s from a 60 fps test video (live streaming is still untested). See
+Pause modulation is a dead end. The downlink decodes in the world at every
+frame of a 60 fps video, up to 15 Mbit/s error-free at 4K and 61 Mbit/s raw
+(live streaming is still untested). See
 [Findings](#findings) for what has been measured so far, and
 [WORKFLOW.md](WORKFLOW.md) for machine setup, the automated run loop, and gotchas.
 
@@ -239,9 +240,20 @@ in flight) and whole decoded textures for errors.
   ceiling is one video frame per rendered frame. The first runs (11-17 and
   11-24) showed every other frame only because the probe waited for each
   metadata readback before issuing the next.
-- **AVPro decodes the same videos** (run 11-26), upside down in its texture,
-  which the sync handles. That run had the sampling bug, so its frame rate is
-  still to be re-measured.
+- **Resolution scales it, in both players** (runs 11-33 to 11-40; bitrate
+  scaled with pixel count, 60 fps):
+
+  | Video | Unity player | AVPro |
+  | --- | --- | --- |
+  | 1080p, 8 px, 4 levels, 18 Mbit/s | 599/599, 0 errors, 3.83 Mbit/s | 595/599, 0 errors, 3.82 Mbit/s |
+  | 1080p, 4 px, 4 levels, 45 Mbit/s | 599/599, 0.21%, 15.3 Mbit/s | 594/599, 0.12%, 15.2 Mbit/s |
+  | 4K, 8 px, 4 levels, 72 Mbit/s | 598/599, 0 errors, 15.4 Mbit/s | 582/599, 0 errors, 15.1 Mbit/s |
+  | 4K, 4 px, 4 levels, 180 Mbit/s | 595/599, 0.42%, 61.0 Mbit/s | 581/599, 0.64%, 59.5 Mbit/s |
+
+  The error rates match the offline check, so the video bitrate is the limit,
+  not the player. AVPro gives no more than the Unity player and drops a few
+  more frames at 4K. Its picture is upside down in its texture, which the
+  sync handles. It's needed only for true live streams (HLS, RTSP).
 
 **Offline (`deno task gen-down --check`).**
 
@@ -287,6 +299,7 @@ This is luma only, decoded by ffmpeg.
 | 11-17 | Downlink test videos, Unity player | Decodes in the world (probe then sampled every other frame) |
 | 11-26 | Same videos, AVPro | Decodes too; the picture is flipped |
 | 11-29 | Unity player, fixed sampling | All 60 fps arrive: 6.76 Mbit/s at 0.016% |
+| 11-33 to 11-40 | 1080p and 4K, both players | 15.4 Mbit/s error-free at 4K; 61 Mbit/s raw at 0.42% |
 
 ## Open questions
 
@@ -296,6 +309,6 @@ This is luma only, decoded by ffmpeg.
 - Whether any globally trusted host can serve custom byte ranges (the only
   path that needs no viewer setting).
 - Behavior on native Windows, and at VR frame rates (90/120 Hz).
-- Downlink: AVPro's frame rate, resolutions above 720p, and a live,
-  low-latency transport (a paced virtual MP4 of padded intra frames, or HLS/RTSP).
+- Downlink: a live, low-latency transport (a paced virtual MP4 of padded
+  intra frames, or HLS/RTSP), and error correction for 4 px blocks.
 - Whether playback rate is exposed to Udon (assumed no).
