@@ -180,3 +180,87 @@ export class LiveEncoder {
     }
   }
 }
+
+const now = () => performance.timeOrigin + performance.now();
+
+export type LiveStream = {
+  p: LiveParams;
+  mp4: VirtualMp4;
+  sampleSize: number;
+  start: number; // the response's byte range
+  end: number;
+  lead: number; // frames sent at once, before real-time pacing
+  render: (n: number) => Uint8Array; // frame n's luma, asked for just before it is encoded
+  onFrame?: (n: number) => void; // frame n starts going out
+  onEnd?: (ev: "done" | "abort", sent: number, ms: number, overflows: number) => void;
+};
+
+// A response body for bytes start..end of a live stream: the header, then each
+// frame encoded when it is due.
+export function liveStream(s: LiveStream): ReadableStream<Uint8Array> {
+  const { p, mp4, sampleSize, start, end, lead } = s;
+  const length = end - start + 1;
+  const first = mp4.frameAt(Math.max(start, mp4.header.length))!;
+  // The encoder runs two frames ahead of what is sent: a frame's sample only
+  // appears when the next one starts.
+  const encoder = new LiveEncoder(p, sampleSize);
+  let written = first;
+  const feed = async (upTo: number) => {
+    while (written <= upTo) await encoder.write(s.render(written++));
+  };
+  const t0 = now();
+  let sent = 0, closed = false, current = -1, last = mp4.sample;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let wake: (() => void) | undefined;
+  const waitFor = (ms: number) => new Promise<void>((resolve) => {
+    wake = resolve;
+    timer = setTimeout(() => { timer = undefined; wake = undefined; resolve(); }, ms);
+  });
+  const finish = (ev: "done" | "abort") => {
+    if (closed) return;
+    closed = true;
+    if (timer !== undefined) clearTimeout(timer);
+    wake?.();
+    encoder.close();
+    s.onEnd?.(ev, sent, now() - t0, encoder.overflows);
+  };
+  return new ReadableStream<Uint8Array>({
+    async pull(ctrl) {
+      if (sent >= length) {
+        ctrl.close();
+        finish("done");
+        return;
+      }
+      if (closed) return;
+      const position = start + sent;
+      let chunk: Uint8Array;
+      if (position < mp4.header.length) chunk = mp4.header.subarray(position, Math.min(mp4.header.length, end + 1));
+      else {
+        const n = mp4.frameAt(position)!;
+        const due = t0 + Math.max(0, n - first - lead + 1) * 1000 / p.fps;
+        while (!closed && due > now()) await waitFor(due - now());
+        if (closed) return;
+        if (n !== current) {
+          try {
+            await feed(n + 1);
+            // A frame larger than the sample size repeats the last one: an erasure.
+            last = (await encoder.take()) ?? last;
+          } catch (e) {
+            finish("abort");
+            ctrl.error(e);
+            return;
+          }
+          current = n;
+          s.onFrame?.(n);
+        }
+        const off = (position - mp4.header.length) % sampleSize;
+        chunk = last.subarray(off, Math.min(sampleSize, off + end + 1 - position));
+      }
+      sent += chunk.length;
+      ctrl.enqueue(chunk);
+    },
+    cancel() {
+      finish("abort");
+    },
+  }, { highWaterMark: 0 });
+}

@@ -41,7 +41,8 @@ export function symbol(l: Layout, frame: number, index: number): number {
   return hash((hash((frame ^ Math.imul(l.seed, 0x9e3779b9)) >>> 0) + index) >>> 0) % l.levels;
 }
 
-export function render(l: Layout, frame: number, out = new Uint8Array(l.w * l.h)): Uint8Array {
+// sym: each block's symbol; the test pattern by default, data for the modem.
+export function render(l: Layout, frame: number, out = new Uint8Array(l.w * l.h), sym = (i: number) => symbol(l, frame, i)): Uint8Array {
   out.fill(BLACK);
   const cell = (c: number, v: number) => {
     for (let y = 0; y < HEADER; y++) out.fill(v, y * l.w + c * CELL, y * l.w + (c + 1) * CELL);
@@ -53,7 +54,7 @@ export function render(l: Layout, frame: number, out = new Uint8Array(l.w * l.h)
   const { cols, rows } = blocks(l);
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      const v = level(l, symbol(l, frame, r * cols + c));
+      const v = level(l, sym(r * cols + c));
       for (let y = 0; y < l.block; y++) {
         const at = (HEADER + r * l.block + y) * l.w + c * l.block;
         out.fill(v, at, at + l.block);
@@ -66,6 +67,15 @@ export function render(l: Layout, frame: number, out = new Uint8Array(l.w * l.h)
 // Decodes an upright luma frame as the shader does (which also uses the sync to
 // tell which way is up): each block's centre against the nearest calibration level.
 export function decode(l: Layout, y: Uint8Array): { frame: number; errors: number } | null {
+  const d = decodeSymbols(l, y);
+  if (!d) return null;
+  let errors = 0;
+  d.symbols.forEach((s, i) => { if (s !== symbol(l, d.frame, i)) errors++; });
+  return { frame: d.frame, errors };
+}
+
+// The frame number and every block's symbol.
+export function decodeSymbols(l: Layout, y: Uint8Array): { frame: number; symbols: Uint8Array } | null {
   const at = (px: number, py: number) => {
     // The centre 2 x 2 of an even block, as bilinear sampling at its centre.
     const x0 = Math.floor(px - 0.5), y0 = Math.floor(py - 0.5);
@@ -78,14 +88,14 @@ export function decode(l: Layout, y: Uint8Array): { frame: number; errors: numbe
   for (let b = 0; b < FRAME_BITS; b++) frame = frame * 2 + (cellAt(FRAME_CELL + b) > mid ? 1 : 0);
   const cal = Array.from({ length: l.levels }, (_, i) => cellAt(2 + i));
   const { cols, rows } = blocks(l);
-  let errors = 0;
+  const symbols = new Uint8Array(cols * rows);
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       const v = at(c * l.block + l.block / 2, HEADER + r * l.block + l.block / 2);
       let best = 0;
       for (let i = 1; i < l.levels; i++) if (Math.abs(v - cal[i]) < Math.abs(v - cal[best])) best = i;
-      if (best !== symbol(l, frame, r * cols + c)) errors++;
+      symbols[r * cols + c] = best;
     }
   }
-  return { frame, errors };
+  return { frame, symbols };
 }

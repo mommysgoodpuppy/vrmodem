@@ -1,6 +1,8 @@
 {
   "tasks": {
-    "test": "deno test -A *_test.ts",
+    "test": "deno test -A --unstable-net *_test.ts modem/*_test.ts",
+    "gateway": "deno run --allow-net --allow-env --allow-run=ffmpeg,passt --allow-read=../media,../logs --allow-write=../logs gateway.ts",
+    "sim": "deno run -A sim_client.ts",
     "serve": "deno run --allow-net --allow-env --allow-run=ffmpeg --allow-read=../media,../logs --allow-write=../logs main.ts",
     "gen-down": "deno run --allow-run=ffmpeg --allow-read=../media --allow-write=../media gen_downlink.ts",
     "gen": "deno run --allow-run=ffmpeg --allow-read=../media --allow-write=../media gen_media.ts",

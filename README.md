@@ -41,6 +41,9 @@ Live streams generated at send time arrive whole, at about 0.5 s latency. See
 | `server/check_downlink_shader.ts` | GPU verification against the TypeScript reference (`deno task check-down-shader`) |
 | `server/live_mp4.ts` | Live downlink: persistent x264, slices padded to a fixed sample size under a `VirtualMp4` header (served at `/l/`) |
 | `server/live_check.ts` | Offline check of live samples per QP: size, overflows, decode errors (`deno task live-check`) |
+| `server/gateway.ts` | The modem's gateway: uplink lanes, the data downlink, a passt per client (`deno task gateway`; [MODEM.md](MODEM.md)) |
+| `server/modem/` | Link protocol (`link.ts`), its client and gateway halves, passt wrapper, IP helpers, simulation tests |
+| `server/sim_client.ts` | A stand-in world against a running gateway: ping and DNS through it (`deno task sim`) |
 | `server/delay_proxy.ts` | Userspace TCP proxy that emulates WAN RTT, handshake cancellation included (`deno task delay`); with `--rtt 0`, a plain relay |
 | `unity/DownProbe.cs` | UdonSharp downlink probe: plays each test video, decodes it with `Downlink.shader`, reads back metadata and errors |
 | `unity/ModemProbe.cs` | UdonSharp probe: automatic load, seek and pause patterns, position sampling |
