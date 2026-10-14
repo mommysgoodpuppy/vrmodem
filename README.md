@@ -131,6 +131,16 @@ must not be open in the editor at the same time.
 
 ## Findings
 
+### Runs 2026-10-14T09-28 and 09-30 (2 AVPro lanes through `delay_proxy`)
+
+- **RTT costs latency, not rate.** At 40 ms and 150 ms emulated RTT, two
+  lanes seeking every frame matched 2400/2400 each run, at 60 seeks/s per
+  lane, with no extra or reordered requests. Latency from `SetTime` to the
+  server is 1.5 × RTT + about 2 ms (62 ms and 227 ms): the handshake plus the
+  one-way trip. WMF opens each seek's connection without waiting for earlier
+  ones, so at 150 ms about 13 are in flight per lane. Real WAN loss and
+  jitter are still untested.
+
 ### Runs 2026-10-14T09-10 to 09-24 (uplink rate, depth, and lanes)
 
 - **One seek per Udon frame is lossless.** At 60 fps (desktop), 400 random

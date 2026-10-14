@@ -6,19 +6,21 @@
 //   4. follow the VRChat output log until every probe reports done (or timeout)
 // Everything lands in logs/run-<time>/.
 //
-//   deno task probe [--no-build] [--url URL] [--matrix "URL URL ..."] [--rtt MS] [--lanes N]
+//   deno task probe [--no-build] [--url URL] [--matrix "URL URL ..."] [--rtt MS] [--lanes N] [--listen HOST:PORT]
 //                   [--intervals 0.1,0,-2] [--seeks 400] [--timeout 300] [--vr]
 //
 // --rtt routes the baked URLs through delay_proxy.ts on port 8788, emulating
 // that round-trip time (and a TCP handshake) without root. --lanes builds N
 // AVPro players (Probe AVPro0..) instead of one AVPro and one Unity player.
+// --listen binds the probe server elsewhere (default 127.0.0.1:8787), e.g.
+// 0.0.0.0:8080 with --url on the public address for a port-forwarded test.
 
 import { parseArgs } from "jsr:@std/cli@1/parse-args";
 import { join } from "jsr:@std/path@1";
 
 const args = parseArgs(Deno.args, {
   boolean: ["no-build", "vr"],
-  string: ["url", "matrix", "rtt", "lanes", "intervals", "seeks", "timeout"],
+  string: ["url", "matrix", "rtt", "lanes", "intervals", "seeks", "listen", "timeout"],
 });
 const HOME = Deno.env.get("HOME")!;
 const REPO = new URL("../", import.meta.url).pathname;
@@ -76,7 +78,10 @@ say(`world: ${vrcw}`);
 const server = new Deno.Command("deno", {
   args: ["task", "serve"],
   cwd: join(REPO, "server"),
-  env: { LOG_PATH: join(runDir, "server.jsonl") },
+  env: {
+    LOG_PATH: join(runDir, "server.jsonl"),
+    ...(args.listen ? { HOST: args.listen.replace(/:\d+$/, ""), PORT: args.listen.match(/:(\d+)$/)?.[1] ?? "8787" } : {}),
+  },
   stdout: "piped",
   stderr: "inherit",
 }).spawn();
