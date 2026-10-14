@@ -187,9 +187,14 @@ Current state as of 2026-10-14. Desktop VRChat under `proton-rtsp-11.0`,
 
 - **Every run so far relied on "Allow untrusted URLs".** VRChat logs
   `You are playing an untrusted URL (Domain: …) in a local world` for
-  `127.0.0.1` and LAN IPs alike, and says the domain must be on "the world's
-  Video Player Allowed Domains list on the website". An uploaded world could
-  presumably allow its modem server that way. That's untested.
+  `127.0.0.1` and LAN IPs alike, and points to "the world's Video Player
+  Allowed Domains list on the website". According to VRChat's
+  [allowlist docs](https://creators.vrchat.com/worlds/udon/video-players/www-whitelist/),
+  that list doesn't remove the viewer setting. In Public and Group Public
+  instances an untrusted domain needs both the world's list and the viewer's
+  "Allow untrusted URLs". In other instances the viewer setting alone is
+  enough. Playback with no settings changes would require one of VRChat's
+  globally trusted hosts.
 - **Each load is preceded by a Chrome-UA request** (VRChat's URL check), which
   is aborted after a few KiB. The analyzer ignores it.
 - **The LAN IP behaves like loopback.** The public IP can't be reached from
@@ -228,8 +233,8 @@ Current state as of 2026-10-14. Desktop VRChat under `proton-rtsp-11.0`,
 - How many lanes before VRChat, Udon, or WMF degrade (8, 16, …)?
 - Whether a nearby HTTP edge (CDN or relay) forwards `Range` requests
   uncached, restoring about 60 seeks/s per lane over the internet.
-- Whether a world's allowed-domains list makes this work for players without
-  "Allow untrusted URLs".
+- Whether any globally trusted host can serve custom byte ranges (the only
+  path that needs no viewer setting).
 - Behavior on native Windows, and at VR frame rates (90/120 Hz).
 - Downlink: data video read back through `VRCAsyncGPUReadback`, throughput
   and error rate.
