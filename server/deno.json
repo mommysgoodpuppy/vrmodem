@@ -6,6 +6,7 @@
     "gen": "deno run --allow-run=ffmpeg --allow-read=../media --allow-write=../media gen_media.ts",
     "probe": "deno run -A run_probe.ts",
     "delay": "deno run --allow-net delay_proxy.ts",
-    "analyze": "deno run --allow-read=../logs --allow-write=../logs analyze.ts"
+    "analyze": "deno run --allow-read=../logs --allow-write=../logs analyze.ts",
+    "check-down-shader": "deno run -A check_downlink_shader.ts"
   }
 }

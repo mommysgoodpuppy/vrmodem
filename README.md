@@ -19,7 +19,8 @@ an external server, built only from what Udon video players already do.
   at runtime). Fall back to IP matching.
 
 Status: the seek leak works, with exact 22-bit symbols and parallel lanes.
-Pause modulation is a dead end, and the downlink hasn't been built yet. See
+Pause modulation is a dead end. The downlink has test videos and a GPU-tested
+decode shader; live in-world readback is still to be wired. See
 [Findings](#findings) for what has been measured so far, and
 [WORKFLOW.md](WORKFLOW.md) for machine setup, the automated run loop, and gotchas.
 
@@ -35,6 +36,8 @@ Pause modulation is a dead end, and the downlink hasn't been built yet. See
 | `server/analyze.ts` | Merged client/server timeline, seek grading, per-rate and aggregate throughput (`deno task analyze`) |
 | `server/downlink.ts` | Downlink test frame layout: header, calibration, gray blocks, reference decoder |
 | `server/gen_downlink.ts` | Downlink test videos and an offline ffmpeg check (`deno task gen-down [--check]`) |
+| `unity/Downlink.shader`, `unity/Downlink.cginc` | Downlink decoder and reusable HLSL; output format and ShaderEmu use in [DOWNLINK.md](DOWNLINK.md) |
+| `server/check_downlink_shader.ts` | GPU verification against the TypeScript reference (`deno task check-down-shader`) |
 | `server/delay_proxy.ts` | Userspace TCP proxy that emulates WAN RTT, handshake cancellation included (`deno task delay`); with `--rtt 0`, a plain relay |
 | `unity/ModemProbe.cs` | UdonSharp probe: automatic load, seek and pause patterns, position sampling |
 | `unity/Editor/ProbeSceneBuilder.cs` | Generates the probe scene, headless or from the editor menu |
