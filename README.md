@@ -41,6 +41,7 @@ Live streams generated at send time arrive whole, at about 0.5 s latency. See
 | `server/check_downlink_shader.ts` | GPU verification against the TypeScript reference (`deno task check-down-shader`) |
 | `server/live_mp4.ts` | Live downlink: persistent x264, slices padded to a fixed sample size under a `VirtualMp4` header (served at `/l/`) |
 | `server/live_check.ts` | Offline check of live samples per QP: size, overflows, decode errors (`deno task live-check`) |
+| `PROTOCOL.md` | How data is packed into seeks and frames, end to end |
 | `server/gateway.ts` | The modem's gateway: uplink lanes, the data downlink, a passt per client (`deno task gateway`; [MODEM.md](MODEM.md)) |
 | `server/modem/` | Link protocol (`link.ts`), its client and gateway halves, passt wrapper, IP helpers, simulation tests |
 | `server/shell_check.ts` | A shell on the world's machine through a gateway port forward: runs commands and times them (`--interactive` for your own terminal) |
@@ -63,6 +64,10 @@ cd server
 deno task gen                 # probe MP4s, HLS, and media/frame-64.mp4
 deno task serve               # 127.0.0.1:8787; HOST/PORT env to change
 ```
+
+This is the probe server. A world with the modem (ShaderEmu's) needs the gateway instead,
+`deno task gateway` on 127.0.0.1:8788 ([MODEM.md](MODEM.md)). Started before you join:
+each lane gives up after five failed loads.
 
 `GET /` lists URLs. Media URLs are `/s/<session>/<file>[?kbps=N]`. Each run
 writes `logs/<start time>.jsonl` with `req`, `res`, `pull` (offset and size of

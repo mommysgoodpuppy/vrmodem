@@ -14,6 +14,9 @@ The gateway (`server/gateway.ts`) gives each client its own
 forwards ports in: `--forward SESSION:tcp:2222:22` makes the host's port 2222
 the machine's port 22.
 
+For *how* the bits get into seeks and frames, byte by byte, see
+[PROTOCOL.md](PROTOCOL.md).
+
 The reference implementation is `server/modem/` (`link.ts`, `client.ts`,
 `session.ts`). `unity/Modem.cs` must match its client half bit for bit.
 
