@@ -51,8 +51,9 @@ Where to read more:
 
 ## 2. In the world: what works, what's untested, caveats
 
-The world side lives in ShaderEmu's VRChat world (the `modem` branch of a ShaderEmu fork,
-not yet published). There the machine on the wall has a modem, a chart recorder of the seeks,
+The world side lives in ShaderEmu's VRChat world, in
+[a fork of ShaderEmu](https://github.com/mommysgoodpuppy/ShaderEmu) (branch `modem`; its
+`docs/modem.md` is the world's half of this README). There the machine on the wall has a modem, a chart recorder of the seeks,
 a speed meter, and a sound you can switch on to hear the data.
 
 **Works (tested by one player, gateway on the same PC):**
