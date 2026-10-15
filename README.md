@@ -147,3 +147,7 @@ cd server
 deno task gateway        # the modem's server, 127.0.0.1:8788
 deno task test           # protocol and media tests
 ```
+
+## License
+
+MIT (`LICENSE`).
