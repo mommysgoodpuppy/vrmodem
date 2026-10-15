@@ -28,7 +28,7 @@ const [HOST, PORT] = (args.listen ?? "127.0.0.1:8788").split(":");
 const LANES = Number(args.lanes ?? 8);
 const MEDIA_DIR = new URL("../media/", import.meta.url).pathname;
 const LOG_DIR = new URL("../logs/", import.meta.url).pathname;
-// Lane videos: 60 fps, 4,194,240 frames (README: about 2^22 is the limit).
+// Lane videos: 60 fps, 4,194,240 frames (README_old.md: about 2^22 is the limit).
 const LANE_FPS = 60, LANE_SECONDS = 69904, LANE_LEAD = 30;
 const PASST_DIR = join(LOG_DIR, "passt");
 // Packets logged one by one per session and direction; GATEWAY_TRACE=1: all of them, with

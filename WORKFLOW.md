@@ -1,7 +1,7 @@
 # Workflow
 
 How to set up this machine for vrmodem, and how a probe run works end to end.
-For what the project is and what has been measured, see [README.md](README.md).
+For what the project is, see [README.md](README.md); for what has been measured, [README_old.md](README_old.md).
 
 ## Components
 

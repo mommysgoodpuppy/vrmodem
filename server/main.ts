@@ -1,5 +1,5 @@
 // Probe server: serves test media and logs every request plus the timing of
-// every chunk the client pulls. The log is the measurement; see ../README.md.
+// every chunk the client pulls. The log is the measurement; see ../README_old.md.
 //
 //   deno task serve            # 127.0.0.1:8787
 //   HOST=0.0.0.0 PORT=9000 deno task serve
@@ -9,7 +9,7 @@
 //   <session> is free-form and only used to group log lines.
 //   kbps caps the send rate for that response so the player can't buffer far
 //   ahead (needed for the pause / consumption-rate channel).
-// /v/<session>/<name>.mp4: virtual MP4 of one repeated tiny frame (README).
+// /v/<session>/<name>.mp4: virtual MP4 of one repeated tiny frame (README_old.md).
 // /l/<session>/<name>.mp4?w=&h=&block=&levels=&seed=&fps=&qp=&lead=&seconds=:
 //   live downlink, downlink.ts test frames made and encoded at send time
 //   (live_mp4.ts), one frame per 1/fps after `lead` frames; logs a "frame"
@@ -97,7 +97,7 @@ async function serveLive(req: Request, id: number, session: string, name: string
   const p: LiveParams = { w: q("w", 1280), h: q("h", 720), block: q("block", 8), levels: q("levels", 4), seed: q("seed", 1), fps: q("fps", 60), qp: q("qp", 36) };
   const lead = q("lead", 6), seconds = q("seconds", 3600);
   const int = (v: number, lo: number, hi: number) => Number.isInteger(v) && v >= lo && v <= hi;
-  // WMF accepts about 2^22 samples (README); 4K is the largest size measured.
+  // WMF accepts about 2^22 samples (README_old.md); 4K is the largest size measured.
   if (!int(p.w, 544, 3840) || !int(p.h, 32, 2160) || p.w % 2 || p.h % 2 || !int(p.block, 2, 64) || p.block % 2 ||
     ![2, 4, 8].includes(p.levels) || !int(p.seed, -(2 ** 31), 2 ** 31 - 1) || !int(p.fps, 1, 120) || !int(p.qp, 0, 51) ||
     !int(lead, 0, 600) || !int(seconds, 1, Math.floor(4_194_240 / p.fps))) {

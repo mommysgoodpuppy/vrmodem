@@ -36,7 +36,7 @@ sequence numbers.
 `SetTime` takes seconds; WMF picks the first sample starting at or after
 `ceil(t × fps)`. Aiming frame N at its middle, `(N − 0.5) / 60`, computed in
 double before the float32 conversion, matched every seek at sub-frame phases
-0.05–0.95 (README, Findings) — so the mapping time → frame → byte offset is
+0.05–0.95 (README_old.md, Findings) — so the mapping time → frame → byte offset is
 exact, not approximate. Float32 jitter is irrelevant because the target is
 never near a frame boundary.
 
