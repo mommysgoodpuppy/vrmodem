@@ -1,5 +1,12 @@
 # vrmodem
 
+> **One of three projects** that together put an emulated Linux computer in a VRChat world
+> and get it online through video players. You need all three:
+>
+> - [ShaderEmu (fork)](https://github.com/mommysgoodpuppy/ShaderEmu): the VRChat world and its computer emulated in a shader, with the modem's world half (branch `modem`)
+> - [vrmodem](https://github.com/mommysgoodpuppy/vrmodem): the modem's protocol and the gateway server that the instance owner runs (this one)
+> - [FXC2 (fork)](https://github.com/mommysgoodpuppy/FXC2): the shader compiler the world's CPU shader needs, with support for the native Linux Unity editor (branch `linux-unity-loader`)
+
 An internet connection for a VRChat world, made out of nothing but video players.
 
 VRChat worlds can't open network connections. They can play videos from a URL, though, and
